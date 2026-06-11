@@ -1,0 +1,98 @@
+{{template "app_page_start" (dict "Title" "Create device - Anchor" "Shell" .Shell "Active" "devices" "OrganisationAction" "/devices/new" "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Create device</h1>
+							<p class="page-subtitle">Register a device and configure communication access.</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Back to devices</a>
+						</div>
+					</header>
+
+					<form class="device-create-form" method="post" action="/devices">
+						<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Device</h2>
+									<p class="card-subtitle">Common entity values</p>
+								</div>
+							</header>
+							<div class="card-body">
+								<div class="form-grid">
+									<label class="field">
+										<span class="field-label">Device ID</span>
+										<input class="input" name="device_id" placeholder="device-001" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Model</span>
+										<input class="input" name="model_name" placeholder="Gateway v1" required>
+									</label>
+								</div>
+							</div>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Communication</h2>
+								</div>
+							</header>
+							<div class="card-body">
+								<div class="tabs" aria-label="Communication type">
+									<a class="tab-item is-active" href="#mqtt">MQTT</a>
+									<span class="tab-item is-disabled">CoAP</span>
+									<span class="tab-item is-disabled">LwM2M</span>
+									<span class="tab-item is-disabled">BLE</span>
+								</div>
+
+								<section class="tab-panel" id="mqtt">
+									{{if .MQTTFormError}}
+										<p class="form-error">{{.MQTTFormError}}</p>
+									{{end}}
+									<div class="form-grid">
+										<label class="field">
+											<span class="field-label">MQTT username</span>
+											<input class="input" name="mqtt_username" placeholder="device-001" required>
+										</label>
+										<label class="field">
+											<span class="field-label">MQTT password</span>
+											<span class="password-input">
+												<input class="input" id="mqtt_password" name="mqtt_password" type="password" autocomplete="new-password" required>
+												{{template "password_toggle" .}}
+											</span>
+										</label>
+										<label class="checkbox-field field-wide">
+											<input type="checkbox" name="is_gateway">
+											<span>
+												<span class="field-label">Gateway</span>
+												<span class="field-help">May publish data for other devices in this organisation.</span>
+											</span>
+										</label>
+									</div>
+									<div class="protocol-sections">
+										<section>
+											<h3 class="section-title">Organisation ID</h3>
+											<p class="topic-preview value-mono">{{.Shell.SelectedOrganisationID}}</p>
+										</section>
+										<section>
+											<h3 class="section-title">Data publish topic</h3>
+											<p class="topic-preview value-mono">dev/{{.Shell.SelectedOrganisationID}}/{deviceID}/data</p>
+										</section>
+										<section>
+											<h3 class="section-title">Task receive topic</h3>
+											<p class="topic-preview value-mono">dev/{{.Shell.SelectedOrganisationID}}/{deviceID}/task</p>
+										</section>
+									</div>
+								</section>
+							</div>
+						</section>
+
+						<div class="form-actions">
+							<a class="button button-ghost" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Cancel</a>
+							<button class="button button-primary" type="submit">Create device</button>
+						</div>
+					</form>
+				</main>
+{{template "app_page_end" .}}

@@ -1,0 +1,98 @@
+{{template "app_page_start" (dict "Title" "Devices - Anchor" "Shell" .Shell "Active" "devices" "OrganisationAction" "/devices" "SearchPlaceholder" "Search devices" "DeviceBadge" (printf "%d" (len .Devices)) "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Devices</h1>
+							<p class="page-subtitle">Fleet inventory and software versions.</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-primary" href="/devices/new?organisation_id={{.Shell.SelectedOrganisationID}}">Create device</a>
+						</div>
+					</header>
+
+					<section class="grid grid-cols-4 metrics-grid" aria-label="Device metrics">
+						<div class="card kpi-card">
+							<div class="kpi-icon">D</div>
+							<div>
+								<div class="kpi-label">Total devices</div>
+								<div class="kpi-value">{{len .Devices}}</div>
+							</div>
+						</div>
+						<div class="card kpi-card">
+							<div class="kpi-icon is-success">O</div>
+							<div>
+								<div class="kpi-label">Online</div>
+								<div class="kpi-value">0</div>
+								<div class="kpi-meta">Pending telemetry</div>
+							</div>
+						</div>
+						<div class="card kpi-card">
+							<div class="kpi-icon is-warning">U</div>
+							<div>
+								<div class="kpi-label">Updates</div>
+								<div class="kpi-value">0</div>
+							</div>
+						</div>
+						<div class="card kpi-card">
+							<div class="kpi-icon">M</div>
+							<div>
+								<div class="kpi-label">Models</div>
+								<div class="kpi-value">0</div>
+							</div>
+						</div>
+					</section>
+
+					<section class="card data-table-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Device inventory</h2>
+								<p class="card-subtitle">{{len .Devices}} devices registered</p>
+							</div>
+							<button class="button button-secondary" type="button">Refresh</button>
+						</header>
+
+						<div class="data-table-wrapper">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th scope="col">ID</th>
+										<th scope="col">Model</th>
+										<th scope="col">Software</th>
+										<th scope="col">Communication</th>
+										<th scope="col">Status</th>
+										<th scope="col" class="table-action-column">Actions</th>
+									</tr>
+								</thead>
+								<tbody>
+									{{range .Devices}}
+										<tr>
+											<td class="value-mono"><a class="table-link" href="/devices/{{.ID}}?organisation_id={{$.Shell.SelectedOrganisationID}}">{{.ID}}</a></td>
+											<td>{{.ModelName}}</td>
+											<td class="value-mono">{{.SoftwareVersions}}</td>
+											<td>
+												{{range .Communication}}
+													<span class="protocol-pill">{{.}}</span>
+												{{else}}
+													<span class="muted-text">None</span>
+												{{end}}
+											</td>
+											<td><span class="status-pill status-neutral">{{.Status}}</span></td>
+											<td class="table-actions-cell">
+												<form method="post" action="/devices/delete">
+													<input type="hidden" name="device_id" value="{{.ID}}">
+													<input type="hidden" name="organisation_id" value="{{$.Shell.SelectedOrganisationID}}">
+													<button class="button button-danger button-small" type="submit" onclick="return confirm('Delete device {{.ID}}? This also removes its communication credentials.');">Delete</button>
+												</form>
+											</td>
+										</tr>
+									{{else}}
+										<tr>
+											<td class="empty-table-cell" colspan="6">No devices registered yet.</td>
+										</tr>
+									{{end}}
+								</tbody>
+							</table>
+						</div>
+					</section>
+				</main>
+{{template "app_page_end" .}}

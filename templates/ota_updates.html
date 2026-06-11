@@ -1,0 +1,48 @@
+{{template "app_page_start" (dict "Title" "OTA updates - Anchor" "Shell" .Shell "Active" "ota" "OrganisationAction" "/ota-updates" "SearchPlaceholder" "Search OTA updates" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" (printf "%d" (len .Deployments)))}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">OTA updates</h1>
+							<p class="page-subtitle">Ongoing software release deployments.</p>
+						</div>
+					</header>
+
+					<section class="card data-table-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Deployments</h2>
+								<p class="card-subtitle">{{len .Deployments}} ongoing deployments</p>
+							</div>
+						</header>
+
+						<div class="data-table-wrapper">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th scope="col">Software</th>
+										<th scope="col">Version</th>
+										<th scope="col">Target</th>
+										<th scope="col">Status</th>
+										<th scope="col">Started</th>
+									</tr>
+								</thead>
+								<tbody>
+									{{range .Deployments}}
+										<tr>
+											<td>{{.ReleaseName}}</td>
+											<td class="value-mono">{{.ReleaseVersion}}</td>
+											<td>{{.Target}}</td>
+											<td><span class="status-pill status-info">{{.Status}}</span></td>
+											<td class="value-mono">{{.CreatedAt}}</td>
+										</tr>
+									{{else}}
+										<tr>
+											<td class="empty-table-cell" colspan="5">No ongoing OTA deployments.</td>
+										</tr>
+									{{end}}
+								</tbody>
+							</table>
+						</div>
+					</section>
+				</main>
+{{template "app_page_end" .}}

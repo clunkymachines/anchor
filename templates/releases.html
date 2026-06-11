@@ -1,0 +1,82 @@
+{{template "app_page_start" (dict "Title" "Releases - Anchor" "Shell" .Shell "Active" "releases" "OrganisationAction" "/releases" "SearchPlaceholder" "Search releases" "DeviceBadge" "" "ReleaseBadge" (printf "%d" (len .Releases)) "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Releases</h1>
+							<p class="page-subtitle">Software releases and version strings.</p>
+						</div>
+					</header>
+
+					<form class="device-create-form" method="post" action="/releases" enctype="multipart/form-data">
+						<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Create release</h2>
+									<p class="card-subtitle">Upload a binary artifact for this organisation</p>
+								</div>
+							</header>
+							<div class="card-body">
+								{{if .ReleaseFormError}}
+									<p class="form-error">{{.ReleaseFormError}}</p>
+								{{end}}
+								<div class="form-grid">
+									<label class="field">
+										<span class="field-label">Software</span>
+										<input class="input" name="name" placeholder="firmware" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Version</span>
+										<input class="input" name="version" placeholder="1.2.3" required>
+									</label>
+									<label class="field field-wide">
+										<span class="field-label">Binary</span>
+										<input class="input file-input" name="artifact" type="file" required>
+									</label>
+								</div>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Create release</button>
+								</div>
+							</div>
+						</section>
+					</form>
+
+					<section class="card data-table-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Software releases</h2>
+								<p class="card-subtitle">{{len .Releases}} releases registered</p>
+							</div>
+						</header>
+
+						<div class="data-table-wrapper">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th scope="col">Software</th>
+										<th scope="col">Version</th>
+										<th scope="col">Binary</th>
+										<th scope="col">Size</th>
+										<th scope="col">Created</th>
+									</tr>
+								</thead>
+								<tbody>
+									{{range .Releases}}
+										<tr>
+											<td>{{.Name}}</td>
+											<td class="value-mono">{{.Version}}</td>
+											<td><a class="table-link" href="/org/{{.OrganisationID}}/releases/{{.ID}}/binary">{{.ArtifactFilename}}</a></td>
+											<td class="value-mono">{{.ArtifactSizeBytes}} bytes</td>
+											<td class="value-mono">{{.CreatedAt}}</td>
+										</tr>
+									{{else}}
+										<tr>
+											<td class="empty-table-cell" colspan="5">No software releases registered yet.</td>
+										</tr>
+									{{end}}
+								</tbody>
+							</table>
+						</div>
+					</section>
+				</main>
+{{template "app_page_end" .}}

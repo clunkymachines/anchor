@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>Sign in - Anchor</title>
+		<link rel="stylesheet" href="/static/app.css">
+		<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+		<script src="/static/app.js" defer></script>
+	</head>
+	<body>
+		<main class="login-screen">
+			<section class="card login-card">
+				<div class="sidebar-brand login-brand">
+					<div class="brand-mark"><img src="/logo.png" alt="Clunky Machines"></div>
+					<div class="sidebar-brand-text">
+						<strong>Anchor</strong>
+						<span>by Clunky Machines</span>
+					</div>
+				</div>
+
+				<header class="login-heading">
+					<h1 class="page-title">Sign in</h1>
+					<p class="page-subtitle">Access your device fleet.</p>
+				</header>
+
+				{{if .Error}}
+					<p class="form-error">{{.Error}}</p>
+				{{end}}
+
+				<form class="login-form" method="post" action="/login">
+					<label class="field">
+						<span class="field-label">Email</span>
+						<input class="input" name="email" type="email" autocomplete="email" value="{{.Email}}" required autofocus>
+					</label>
+
+					<label class="field">
+						<span class="field-label">Password</span>
+						<span class="password-input">
+							<input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+							{{template "password_toggle" .}}
+						</span>
+					</label>
+
+					<button class="button button-primary button-block" type="submit">Sign in</button>
+				</form>
+			</section>
+		</main>
+	</body>
+</html>

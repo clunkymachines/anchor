@@ -1,0 +1,114 @@
+{{define "app_page_start"}}
+<!doctype html>
+<html lang="en" data-theme="light">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>{{.Title}}</title>
+		<link rel="stylesheet" href="/static/app.css">
+		<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+		<script src="/static/app.js" defer></script>
+	</head>
+	<body>
+		<div class="app-shell">
+			{{template "app_sidebar" .}}
+
+			<div class="app-body">
+				{{template "app_topbar" .}}
+{{end}}
+
+{{define "app_page_end"}}
+			</div>
+		</div>
+	</body>
+</html>
+{{end}}
+
+{{define "app_sidebar"}}
+<aside class="app-sidebar">
+	<div class="sidebar-brand">
+		<div class="brand-mark"><img src="/logo.png" alt="Clunky Machines"></div>
+		<div class="sidebar-brand-text">
+			<strong>Anchor</strong>
+			<span>by Clunky Machines</span>
+		</div>
+	</div>
+
+	<form class="organisation-picker-form" method="get" action="{{.OrganisationAction}}" data-organisation-picker>
+		<button class="organisation-picker" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="organisation-picker-menu" data-organisation-picker-button>
+			<span class="organisation-picker-compact" aria-hidden="true">O</span>
+			<span class="organisation-picker-kicker">Organisation</span>
+			<span class="organisation-picker-value">
+				{{- range .Shell.Organisations -}}{{- if eq .ID $.Shell.SelectedOrganisationID -}}{{.Name}}{{- end -}}{{- else -}}No organisations{{- end -}}
+			</span>
+			<span class="organisation-chevron" aria-hidden="true">⌄</span>
+		</button>
+		<div class="organisation-menu" id="organisation-picker-menu" role="listbox" aria-label="Organisation" hidden>
+			{{range .Shell.Organisations}}
+				<button class="organisation-option {{if eq .ID $.Shell.SelectedOrganisationID}}is-active{{end}}" type="submit" name="organisation_id" value="{{.ID}}" role="option" aria-selected="{{if eq .ID $.Shell.SelectedOrganisationID}}true{{else}}false{{end}}">
+					<span class="organisation-option-name">{{.Name}}</span>
+				</button>
+			{{else}}
+				<span class="organisation-option is-empty">No organisations</span>
+			{{end}}
+		</div>
+	</form>
+
+	<nav class="sidebar-nav" aria-label="Primary">
+		<a class="nav-item {{if eq .Active "devices"}}is-active{{end}}" {{if eq .Active "devices"}}aria-current="page"{{end}} href="/devices">
+			<span class="nav-icon">D</span>
+			<span class="nav-label">Devices</span>
+			{{if ne .DeviceBadge ""}}<span class="nav-badge">{{.DeviceBadge}}</span>{{end}}
+		</a>
+		<a class="nav-item {{if eq .Active "releases"}}is-active{{end}}" {{if eq .Active "releases"}}aria-current="page"{{end}} href="/releases">
+			<span class="nav-icon">R</span>
+			<span class="nav-label">Releases</span>
+			{{if ne .ReleaseBadge ""}}<span class="nav-badge">{{.ReleaseBadge}}</span>{{end}}
+		</a>
+		<a class="nav-item {{if eq .Active "ota"}}is-active{{end}}" {{if eq .Active "ota"}}aria-current="page"{{end}} href="/ota-updates">
+			<span class="nav-icon">O</span>
+			<span class="nav-label">OTA updates</span>
+			{{if ne .OTABadge ""}}<span class="nav-badge">{{.OTABadge}}</span>{{end}}
+		</a>
+		<a class="nav-item {{if eq .Active "organisations"}}is-active{{end}}" {{if eq .Active "organisations"}}aria-current="page"{{end}} href="/organisations">
+			<span class="nav-icon">G</span>
+			<span class="nav-label">Organisations</span>
+		</a>
+	</nav>
+</aside>
+{{end}}
+
+{{define "app_topbar"}}
+<header class="app-topbar">
+	<div class="search-field">
+		<span aria-hidden="true">S</span>
+		<input type="search" name="q" placeholder="{{.SearchPlaceholder}}">
+	</div>
+	<div class="topbar-actions">
+		<form method="post" action="/logout">
+			<button class="button button-ghost" type="submit">Sign out</button>
+		</form>
+		<div class="user-menu" aria-label="Current user">
+			<div class="user-avatar"></div>
+			<div>
+				<span class="user-name">{{.Shell.User.Name}}</span>
+				<span class="user-email">{{.Shell.User.Email}}</span>
+			</div>
+		</div>
+	</div>
+</header>
+{{end}}
+
+{{define "password_toggle"}}
+<button class="password-toggle" type="button" aria-label="Show password" aria-pressed="false" data-password-toggle>
+	<svg class="password-toggle-icon password-toggle-icon-show" viewBox="0 0 24 24" aria-hidden="true">
+		<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"></path>
+		<circle cx="12" cy="12" r="3"></circle>
+	</svg>
+	<svg class="password-toggle-icon password-toggle-icon-hide" viewBox="0 0 24 24" aria-hidden="true">
+		<path d="M2 12s3.5-7 10-7c2.2 0 4 .8 5.5 1.9M22 12s-3.5 7-10 7c-2.2 0-4-.8-5.5-1.9"></path>
+		<path d="M3 3l18 18"></path>
+		<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>
+	</svg>
+</button>
+{{end}}

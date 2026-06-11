@@ -1,0 +1,337 @@
+{{template "app_page_start" (dict "Title" (printf "%s - Anchor" .Device.ID) "Shell" .Shell "Active" "devices" "OrganisationAction" (printf "/devices/%s" .Device.ID) "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">{{.Device.ID}}</h1>
+							<p class="page-subtitle">Device details and communication access.</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/devices?organisation_id={{.Device.OrganisationID}}">Back to devices</a>
+							<form method="post" action="/devices/delete">
+								<input type="hidden" name="device_id" value="{{.Device.ID}}">
+								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+								<button class="button button-danger" type="submit" onclick="return confirm('Delete device {{.Device.ID}}? This also removes its communication credentials.');">Delete device</button>
+							</form>
+						</div>
+					</header>
+
+					<div class="device-detail-top-grid">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Device</h2>
+									<p class="card-subtitle">Common entity values</p>
+								</div>
+							</header>
+							<div class="card-body">
+								<dl class="key-value-list">
+									<div class="key-value-row">
+										<dt class="key-value-label">ID</dt>
+										<dd class="key-value-value value-mono">{{.Device.ID}}</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Organisation</dt>
+										<dd class="key-value-value value-mono">{{.Device.OrganisationID}}</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Model</dt>
+										<dd class="key-value-value">{{.Device.ModelName}}</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Gateway</dt>
+										<dd class="key-value-value">
+											{{if .Device.IsGateway}}
+												<span class="status-pill status-success">Enabled</span>
+											{{else}}
+												<span class="status-pill status-neutral">Disabled</span>
+											{{end}}
+										</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Software</dt>
+										<dd class="key-value-value value-mono">{{.Device.SoftwareVersions}}</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Status</dt>
+										<dd class="key-value-value"><span class="status-pill status-neutral">{{.Device.Status}}</span></dd>
+									</div>
+								</dl>
+							</div>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Communication</h2>
+								</div>
+							</header>
+							<div class="card-body">
+								<div class="tabs" aria-label="Communication type">
+									<a class="tab-item is-active" href="#mqtt">MQTT</a>
+									<span class="tab-item is-disabled">CoAP</span>
+									<span class="tab-item is-disabled">LwM2M</span>
+									<span class="tab-item is-disabled">BLE</span>
+								</div>
+
+								<section class="tab-panel" id="mqtt">
+									{{if .MQTTCredential}}
+										<dl class="key-value-list">
+											<div class="key-value-row">
+												<dt class="key-value-label">Organisation ID</dt>
+												<dd class="key-value-value value-mono">{{.Device.OrganisationID}}</dd>
+											</div>
+											<div class="key-value-row">
+												<dt class="key-value-label">Username</dt>
+												<dd class="key-value-value value-mono">{{.MQTTCredential.Username}}</dd>
+											</div>
+											<div class="key-value-row">
+												<dt class="key-value-label">Credential</dt>
+												<dd class="key-value-value">
+													{{if .MQTTCredential.Enabled}}
+														<span class="status-pill status-success">Enabled</span>
+													{{else}}
+														<span class="status-pill status-neutral">Disabled</span>
+													{{end}}
+												</dd>
+											</div>
+										</dl>
+
+										<div class="protocol-sections">
+											<section>
+												<h3 class="section-title">Data publish topic</h3>
+												<p class="topic-preview value-mono">{{.Device.DataTopic}}</p>
+											</section>
+											<section>
+												<h3 class="section-title">Task receive topic</h3>
+												<p class="topic-preview value-mono">{{.Device.TaskTopic}}</p>
+											</section>
+											{{if .Device.IsGateway}}
+												<section>
+													<h3 class="section-title">Gateway publish</h3>
+													<p class="topic-preview value-mono">{{.Device.GatewayPublishTopic}}</p>
+												</section>
+											{{end}}
+										</div>
+									{{else}}
+										<div class="empty-state">
+											<h3 class="empty-state-title">MQTT is not configured</h3>
+											<p class="empty-state-text">Create or edit the device with MQTT communication details to enable broker authentication and topic checks.</p>
+										</div>
+									{{end}}
+								</section>
+							</div>
+						</section>
+					</div>
+
+					{{template "device_tasks" .}}
+
+					{{template "device_telemetry" .}}
+				</main>
+{{template "app_page_end" .}}
+
+{{define "device_tasks"}}
+<section id="device-tasks"
+	class="card form-card"
+	hx-get="/devices/{{.Device.ID}}/tasks?organisation_id={{.Device.OrganisationID}}"
+	hx-trigger="device-tasks-refresh from:body"
+	hx-swap="outerHTML">
+	<header class="card-header">
+		<div>
+			<h2 class="card-title">Tasks</h2>
+			<p class="card-subtitle">{{len .ActiveAndRecentTasks}} active and recent tasks</p>
+		</div>
+		<button class="button button-primary" type="button" data-task-launch-open>Launch task</button>
+	</header>
+	<div class="card-body">
+		<div class="task-launch-panel {{if not .TaskFormError}}is-hidden{{end}}" data-task-launch-panel>
+			{{if .TaskFormError}}
+				<p class="form-error">{{.TaskFormError}}</p>
+			{{end}}
+			<div class="task-kind-grid" role="tablist" aria-label="Task type">
+				<button class="task-kind-button" type="button" data-task-kind="read">Read</button>
+				<button class="task-kind-button" type="button" data-task-kind="write">Write</button>
+				<button class="task-kind-button" type="button" data-task-kind="exec">Execute</button>
+				<button class="task-kind-button is-active" type="button" data-task-kind="fota">FOTA</button>
+			</div>
+			<div class="task-kind-form is-hidden" data-task-form="read">
+				<div class="task-placeholder">Read task launch is not implemented yet.</div>
+			</div>
+			<div class="task-kind-form is-hidden" data-task-form="write">
+				<div class="task-placeholder">Write task launch is not implemented yet.</div>
+			</div>
+			<div class="task-kind-form is-hidden" data-task-form="exec">
+				<div class="task-placeholder">Execute task launch is not implemented yet.</div>
+			</div>
+			<form class="task-kind-form device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks" data-task-form="fota">
+				<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+				<input type="hidden" name="task_type" value="fota">
+				<label class="field">
+					<span class="field-label">Release</span>
+					<select class="select" name="release_id" required {{if not .Releases}}disabled{{end}}>
+						{{range .Releases}}
+							<option value="{{.ID}}">{{.Label}}</option>
+						{{else}}
+							<option>No releases available</option>
+						{{end}}
+					</select>
+				</label>
+				<div class="form-actions">
+					<button class="button button-primary" type="submit" {{if not .Releases}}disabled{{end}}>Launch FOTA</button>
+				</div>
+			</form>
+		</div>
+	</div>
+
+	<div class="data-table-wrapper">
+		<table class="data-table">
+			<thead>
+				<tr>
+					<th scope="col">ID</th>
+					<th scope="col">Type</th>
+					<th scope="col">Parameter</th>
+					<th scope="col">Status</th>
+					<th scope="col">Created</th>
+					<th scope="col">Completed</th>
+					<th scope="col">Actions</th>
+				</tr>
+			</thead>
+			<tbody>
+				{{range .ActiveAndRecentTasks}}
+					<tr>
+						<td class="value-mono">{{.ID}}</td>
+						<td>{{.Type}}</td>
+						<td class="value-mono table-cell-wrap">
+							{{if .Parameter}}{{.Parameter}}{{else}}<span class="muted-text">None</span>{{end}}
+						</td>
+						<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
+						<td class="value-mono">{{.CreatedAt}}</td>
+						<td class="value-mono">
+							{{if .CompletedAt}}{{.CompletedAt}}{{else}}<span class="muted-text">Not completed</span>{{end}}
+						</td>
+						<td>
+							{{if not .CompletedAt}}
+								<form method="post"
+									action="/devices/{{$.Device.ID}}/tasks/{{.ID}}/cancel"
+									hx-post="/devices/{{$.Device.ID}}/tasks/{{.ID}}/cancel"
+									hx-target="#device-tasks"
+									hx-swap="outerHTML">
+									<input type="hidden" name="organisation_id" value="{{$.Device.OrganisationID}}">
+									<button class="button button-secondary" type="submit" onclick="return confirm('Cancel task {{.ID}}?');">Cancel</button>
+								</form>
+							{{else}}
+								<span class="muted-text">Finished</span>
+							{{end}}
+						</td>
+					</tr>
+				{{else}}
+					<tr>
+						<td class="empty-table-cell" colspan="7">No tasks.</td>
+					</tr>
+				{{end}}
+			</tbody>
+		</table>
+	</div>
+</section>
+{{end}}
+
+{{define "device_telemetry"}}
+<div id="device-telemetry"
+	data-device-events-url="/devices/{{.Device.ID}}/events?organisation_id={{.Device.OrganisationID}}"
+	hx-get="/devices/{{.Device.ID}}/telemetry?organisation_id={{.Device.OrganisationID}}"
+	hx-trigger="device-telemetry-refresh from:body"
+	hx-swap="outerHTML">
+	<section class="card data-table-card" data-tab-group>
+		<header class="card-header">
+			<div>
+				<h2 class="card-title">Telemetry</h2>
+				<p class="card-subtitle">{{len .TwinProperties}} current properties, {{len .RecentEvents}} latest protocol events</p>
+			</div>
+		</header>
+
+		<div class="card-body telemetry-tabs">
+			<div class="tabs" role="tablist" aria-label="Telemetry views">
+				<button class="tab-item is-active" id="telemetry-twin-tab" type="button" role="tab" aria-selected="true" aria-controls="telemetry-twin-panel" data-tab-button="twin">Device twin</button>
+				<button class="tab-item" id="telemetry-events-tab" type="button" role="tab" aria-selected="false" aria-controls="telemetry-events-panel" data-tab-button="events">Recent events</button>
+			</div>
+		</div>
+
+		<section class="tab-panel" id="telemetry-twin-panel" role="tabpanel" aria-labelledby="telemetry-twin-tab" data-tab-panel="twin">
+			<div class="data-table-wrapper">
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th scope="col">Path</th>
+							<th scope="col">Value</th>
+							<th scope="col">Type</th>
+							<th scope="col">Protocol</th>
+							<th scope="col">Source</th>
+							<th scope="col">Observed</th>
+							<th scope="col">Received</th>
+						</tr>
+					</thead>
+					<tbody>
+						{{range .TwinProperties}}
+							<tr>
+								<td class="value-mono">{{.Path}}</td>
+								<td class="value-mono table-cell-wrap">{{.Value}}</td>
+								<td>{{.ValueType}}</td>
+								<td>{{.Protocol}}</td>
+								<td class="value-mono table-cell-wrap">{{.SourcePath}}</td>
+								<td class="value-mono">{{.TSObserved}}</td>
+								<td class="value-mono">{{.TSReceived}}</td>
+							</tr>
+						{{else}}
+							<tr>
+								<td class="empty-table-cell" colspan="7">No twin properties recorded yet.</td>
+							</tr>
+						{{end}}
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<section class="tab-panel is-hidden" id="telemetry-events-panel" role="tabpanel" aria-labelledby="telemetry-events-tab" data-tab-panel="events">
+			<div class="data-table-wrapper">
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th scope="col">Received</th>
+							<th scope="col">Protocol</th>
+							<th scope="col">Direction</th>
+							<th scope="col">Operation</th>
+							<th scope="col">Topic/path</th>
+							<th scope="col">Format</th>
+							<th scope="col">Source</th>
+							<th scope="col">Payload</th>
+						</tr>
+					</thead>
+					<tbody>
+						{{range .RecentEvents}}
+							<tr>
+								<td class="value-mono">{{.TSReceived}}</td>
+								<td>{{.Protocol}}</td>
+								<td>{{.Direction}}</td>
+								<td>{{.Operation}}</td>
+								<td class="value-mono table-cell-wrap">{{if .Topic}}{{.Topic}}{{else}}{{.CoAPPath}}{{end}}</td>
+								<td>{{.ContentFormat}}</td>
+								<td>{{.Source}}</td>
+								<td class="value-mono table-cell-wrap">
+									{{if .PayloadJSON}}
+										{{.PayloadJSON}}
+									{{else}}
+										{{.PayloadRawSize}} bytes
+									{{end}}
+								</td>
+							</tr>
+						{{else}}
+							<tr>
+								<td class="empty-table-cell" colspan="8">No protocol events recorded yet.</td>
+							</tr>
+						{{end}}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	</section>
+</div>
+{{end}}

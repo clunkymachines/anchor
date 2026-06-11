@@ -1,0 +1,158 @@
+{{template "app_page_start" (dict "Title" "Organisations - Anchor" "Shell" .Shell "Active" "organisations" "OrganisationAction" "/organisations" "SearchPlaceholder" "Search members" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Organisations</h1>
+							<p class="page-subtitle">{{.Organisation.Name}}</p>
+						</div>
+					</header>
+
+					{{if .IsOrganisationAdmin}}
+						<section class="grid grid-cols-2 organisation-settings-grid">
+							<form class="device-create-form" method="post" action="/organisations/rename">
+								<input type="hidden" name="organisation_id" value="{{.Organisation.ID}}">
+								<section class="card form-card">
+									<header class="card-header">
+										<div>
+											<h2 class="card-title">Settings</h2>
+											<p class="card-subtitle">Organisation name</p>
+										</div>
+									</header>
+									<div class="card-body">
+										{{if .RenameFormError}}
+											<p class="form-error">{{.RenameFormError}}</p>
+										{{end}}
+										<label class="field">
+											<span class="field-label">Name</span>
+											<input class="input" name="name" value="{{.Organisation.Name}}" required>
+										</label>
+										<div class="form-actions">
+											<button class="button button-primary" type="submit">Save</button>
+										</div>
+									</div>
+								</section>
+							</form>
+
+							<form class="device-create-form" method="post" action="/organisations/invitations">
+								<input type="hidden" name="organisation_id" value="{{.Organisation.ID}}">
+								<section class="card form-card">
+									<header class="card-header">
+										<div>
+											<h2 class="card-title">Invite member</h2>
+											<p class="card-subtitle">Existing users join immediately</p>
+										</div>
+									</header>
+									<div class="card-body">
+										{{if .InviteFormError}}
+											<p class="form-error">{{.InviteFormError}}</p>
+										{{end}}
+										{{if .InviteMessage}}
+											<p class="form-success">{{.InviteMessage}}</p>
+										{{end}}
+										<label class="field">
+											<span class="field-label">Email</span>
+											<input class="input" name="email" type="email" required>
+										</label>
+										{{if .InviteURL}}
+											<label class="field">
+												<span class="field-label">Invitation URL</span>
+												<input class="input value-mono" value="{{.InviteURL}}" readonly>
+											</label>
+										{{end}}
+										<div class="form-actions">
+											<button class="button button-primary" type="submit">Invite</button>
+										</div>
+									</div>
+								</section>
+							</form>
+						</section>
+
+						<section class="card data-table-card organisation-admins-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Admins</h2>
+									<p class="card-subtitle">{{len .Admins}} admins can manage this organisation</p>
+								</div>
+							</header>
+
+							<div class="data-table-wrapper">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th scope="col">Name</th>
+											<th scope="col">Email</th>
+										</tr>
+									</thead>
+									<tbody>
+										{{range .Admins}}
+											<tr>
+												<td>{{.Name}}</td>
+												<td>{{.Email}}</td>
+											</tr>
+										{{else}}
+											<tr>
+												<td class="empty-table-cell" colspan="2">No admins configured.</td>
+											</tr>
+										{{end}}
+									</tbody>
+								</table>
+							</div>
+						</section>
+					{{end}}
+
+					<section class="card data-table-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Members</h2>
+								<p class="card-subtitle">{{len .Members}} members in this organisation</p>
+							</div>
+						</header>
+						{{if .RemoveFormError}}
+							<div class="card-body">
+								<p class="form-error">{{.RemoveFormError}}</p>
+							</div>
+						{{end}}
+
+						<div class="data-table-wrapper">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th scope="col">Name</th>
+										<th scope="col">Email</th>
+										<th scope="col">Role</th>
+										{{if .IsOrganisationAdmin}}<th scope="col" class="table-action-column">Actions</th>{{end}}
+									</tr>
+								</thead>
+								<tbody>
+									{{range .Members}}
+										<tr>
+											<td>{{.Name}}</td>
+											<td>{{.Email}}</td>
+											<td>
+												{{if eq .Role "admin"}}
+													<span class="status-pill status-info">Admin</span>
+												{{else}}
+													<span class="status-pill status-neutral">Member</span>
+												{{end}}
+											</td>
+											{{if $.IsOrganisationAdmin}}
+												<td class="table-actions-cell">
+													<form method="post" action="/organisations/members/remove">
+														<input type="hidden" name="organisation_id" value="{{$.Organisation.ID}}">
+														<input type="hidden" name="user_id" value="{{.UserID}}">
+														<button class="button button-danger button-small" type="submit" onclick="return confirm('Remove {{.Email}} from {{$.Organisation.Name}}?');">Remove</button>
+													</form>
+												</td>
+											{{end}}
+										</tr>
+									{{else}}
+										<tr>
+											<td class="empty-table-cell" colspan="{{if $.IsOrganisationAdmin}}4{{else}}3{{end}}">No members yet.</td>
+										</tr>
+									{{end}}
+								</tbody>
+							</table>
+						</div>
+					</section>
+				</main>
+{{template "app_page_end" .}}
