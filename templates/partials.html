@@ -35,17 +35,31 @@
 	</div>
 
 	<form class="organisation-picker-form" method="get" action="{{.OrganisationAction}}" data-organisation-picker>
-		<button class="organisation-picker" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="organisation-picker-menu" data-organisation-picker-button>
-			<span class="organisation-picker-compact" aria-hidden="true">O</span>
+		<button
+			class="organisation-picker"
+			type="button"
+			aria-haspopup="listbox"
+			aria-expanded="false"
+			aria-controls="organisation-picker-menu"
+			data-organisation-picker-button
+		>
+			<span class="organisation-picker-compact" aria-hidden="true">{{template "icon_building_2" .}}</span>
 			<span class="organisation-picker-kicker">Organisation</span>
 			<span class="organisation-picker-value">
 				{{- range .Shell.Organisations -}}{{- if eq .ID $.Shell.SelectedOrganisationID -}}{{.Name}}{{- end -}}{{- else -}}No organisations{{- end -}}
 			</span>
-			<span class="organisation-chevron" aria-hidden="true">⌄</span>
+			<span class="organisation-chevron" aria-hidden="true">{{template "icon_chevron_down" .}}</span>
 		</button>
 		<div class="organisation-menu" id="organisation-picker-menu" role="listbox" aria-label="Organisation" hidden>
 			{{range .Shell.Organisations}}
-				<button class="organisation-option {{if eq .ID $.Shell.SelectedOrganisationID}}is-active{{end}}" type="submit" name="organisation_id" value="{{.ID}}" role="option" aria-selected="{{if eq .ID $.Shell.SelectedOrganisationID}}true{{else}}false{{end}}">
+				<button
+					class="organisation-option {{if eq .ID $.Shell.SelectedOrganisationID}}is-active{{end}}"
+					type="submit"
+					name="organisation_id"
+					value="{{.ID}}"
+					role="option"
+					aria-selected="{{if eq .ID $.Shell.SelectedOrganisationID}}true{{else}}false{{end}}"
+				>
 					<span class="organisation-option-name">{{.Name}}</span>
 				</button>
 			{{else}}
@@ -55,23 +69,39 @@
 	</form>
 
 	<nav class="sidebar-nav" aria-label="Primary">
-		<a class="nav-item {{if eq .Active "devices"}}is-active{{end}}" {{if eq .Active "devices"}}aria-current="page"{{end}} href="/devices">
-			<span class="nav-icon">D</span>
+		<a
+			class="nav-item {{if eq .Active "devices"}}is-active{{end}}"
+			{{if eq .Active "devices"}}aria-current="page"{{end}}
+			href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}"
+		>
+			<span class="nav-icon" aria-hidden="true">{{template "icon_cpu" .}}</span>
 			<span class="nav-label">Devices</span>
 			{{if ne .DeviceBadge ""}}<span class="nav-badge">{{.DeviceBadge}}</span>{{end}}
 		</a>
-		<a class="nav-item {{if eq .Active "releases"}}is-active{{end}}" {{if eq .Active "releases"}}aria-current="page"{{end}} href="/releases">
-			<span class="nav-icon">R</span>
+		<a
+			class="nav-item {{if eq .Active "releases"}}is-active{{end}}"
+			{{if eq .Active "releases"}}aria-current="page"{{end}}
+			href="/releases?organisation_id={{.Shell.SelectedOrganisationID}}"
+		>
+			<span class="nav-icon" aria-hidden="true">{{template "icon_package" .}}</span>
 			<span class="nav-label">Releases</span>
 			{{if ne .ReleaseBadge ""}}<span class="nav-badge">{{.ReleaseBadge}}</span>{{end}}
 		</a>
-		<a class="nav-item {{if eq .Active "ota"}}is-active{{end}}" {{if eq .Active "ota"}}aria-current="page"{{end}} href="/ota-updates">
-			<span class="nav-icon">O</span>
+		<a
+			class="nav-item {{if eq .Active "ota"}}is-active{{end}}"
+			{{if eq .Active "ota"}}aria-current="page"{{end}}
+			href="/ota-updates?organisation_id={{.Shell.SelectedOrganisationID}}"
+		>
+			<span class="nav-icon" aria-hidden="true">{{template "icon_radio_tower" .}}</span>
 			<span class="nav-label">OTA updates</span>
 			{{if ne .OTABadge ""}}<span class="nav-badge">{{.OTABadge}}</span>{{end}}
 		</a>
-		<a class="nav-item {{if eq .Active "organisations"}}is-active{{end}}" {{if eq .Active "organisations"}}aria-current="page"{{end}} href="/organisations">
-			<span class="nav-icon">G</span>
+		<a
+			class="nav-item {{if eq .Active "organisations"}}is-active{{end}}"
+			{{if eq .Active "organisations"}}aria-current="page"{{end}}
+			href="/organisations?organisation_id={{.Shell.SelectedOrganisationID}}"
+		>
+			<span class="nav-icon" aria-hidden="true">{{template "icon_building_2" .}}</span>
 			<span class="nav-label">Organisations</span>
 		</a>
 	</nav>
@@ -81,7 +111,7 @@
 {{define "app_topbar"}}
 <header class="app-topbar">
 	<div class="search-field">
-		<span aria-hidden="true">S</span>
+		<span aria-hidden="true">{{template "icon_search" .}}</span>
 		<input type="search" name="q" placeholder="{{.SearchPlaceholder}}">
 	</div>
 	<div class="topbar-actions">
@@ -111,4 +141,89 @@
 		<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>
 	</svg>
 </button>
+{{end}}
+
+{{define "icon_search"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<circle cx="11" cy="11" r="8"></circle>
+	<path d="m21 21-4.3-4.3"></path>
+</svg>
+{{end}}
+
+{{define "icon_chevron_down"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="m6 9 6 6 6-6"></path>
+</svg>
+{{end}}
+
+{{define "icon_cpu"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<rect width="16" height="16" x="4" y="4" rx="2"></rect>
+	<rect width="6" height="6" x="9" y="9" rx="1"></rect>
+	<path d="M15 2v2"></path>
+	<path d="M15 20v2"></path>
+	<path d="M2 15h2"></path>
+	<path d="M2 9h2"></path>
+	<path d="M20 15h2"></path>
+	<path d="M20 9h2"></path>
+	<path d="M9 2v2"></path>
+	<path d="M9 20v2"></path>
+</svg>
+{{end}}
+
+{{define "icon_package"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="m7.5 4.27 9 5.15"></path>
+	<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path>
+	<path d="m3.3 7 8.7 5 8.7-5"></path>
+	<path d="M12 22V12"></path>
+</svg>
+{{end}}
+
+{{define "icon_radio_tower"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="M4.9 16.1a10.8 10.8 0 0 1 0-15.2"></path>
+	<path d="M7.8 13.2a6.7 6.7 0 0 1 0-9.4"></path>
+	<path d="M12 9h.01"></path>
+	<path d="M16.2 3.8a6.7 6.7 0 0 1 0 9.4"></path>
+	<path d="M19.1.9a10.8 10.8 0 0 1 0 15.2"></path>
+	<path d="M9.5 18h5"></path>
+	<path d="m8 22 4-13 4 13"></path>
+</svg>
+{{end}}
+
+{{define "icon_building_2"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18"></path>
+	<path d="M6 12H4a2 2 0 0 0-2 2v8h20v-8a2 2 0 0 0-2-2h-2"></path>
+	<path d="M10 6h4"></path>
+	<path d="M10 10h4"></path>
+	<path d="M10 14h4"></path>
+	<path d="M10 18h4"></path>
+</svg>
+{{end}}
+
+{{define "icon_wifi"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="M12 20h.01"></path>
+	<path d="M2 8.82a15 15 0 0 1 20 0"></path>
+	<path d="M5 12.86a10 10 0 0 1 14 0"></path>
+	<path d="M8.5 16.43a5 5 0 0 1 7 0"></path>
+</svg>
+{{end}}
+
+{{define "icon_download"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+	<path d="m7 10 5 5 5-5"></path>
+	<path d="M12 15V3"></path>
+</svg>
+{{end}}
+
+{{define "icon_layers_3"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="m12.83 2.18 8.58 3.9a1 1 0 0 1 0 1.83l-8.58 3.91a2 2 0 0 1-1.66 0L2.6 7.91a1 1 0 0 1 0-1.83l8.57-3.9a2 2 0 0 1 1.66 0Z"></path>
+	<path d="m22 12.5-9.17 4.18a2 2 0 0 1-1.66 0L2 12.5"></path>
+	<path d="m22 17.5-9.17 4.18a2 2 0 0 1-1.66 0L2 17.5"></path>
+</svg>
 {{end}}

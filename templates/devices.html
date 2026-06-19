@@ -12,14 +12,18 @@
 
 					<section class="grid grid-cols-4 metrics-grid" aria-label="Device metrics">
 						<div class="card kpi-card">
-							<div class="kpi-icon">D</div>
+							<div class="kpi-icon" aria-hidden="true">
+								{{template "icon_cpu" .}}
+							</div>
 							<div>
 								<div class="kpi-label">Total devices</div>
 								<div class="kpi-value">{{len .Devices}}</div>
 							</div>
 						</div>
 						<div class="card kpi-card">
-							<div class="kpi-icon is-success">O</div>
+							<div class="kpi-icon is-success" aria-hidden="true">
+								{{template "icon_wifi" .}}
+							</div>
 							<div>
 								<div class="kpi-label">Online</div>
 								<div class="kpi-value">0</div>
@@ -27,14 +31,18 @@
 							</div>
 						</div>
 						<div class="card kpi-card">
-							<div class="kpi-icon is-warning">U</div>
+							<div class="kpi-icon is-warning" aria-hidden="true">
+								{{template "icon_download" .}}
+							</div>
 							<div>
 								<div class="kpi-label">Updates</div>
 								<div class="kpi-value">0</div>
 							</div>
 						</div>
 						<div class="card kpi-card">
-							<div class="kpi-icon">M</div>
+							<div class="kpi-icon" aria-hidden="true">
+								{{template "icon_layers_3" .}}
+							</div>
 							<div>
 								<div class="kpi-label">Models</div>
 								<div class="kpi-value">0</div>

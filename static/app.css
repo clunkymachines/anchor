@@ -134,6 +134,17 @@ table {
   font-family: var(--font-ui);
 }
 
+.ui-icon {
+  display: block;
+  width: 1em;
+  height: 1em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 button,
 select {
   cursor: pointer;
@@ -362,7 +373,7 @@ a {
   grid-area: chevron;
   justify-self: end;
   color: var(--text-muted);
-  font-size: var(--text-md);
+  font-size: 18px;
   line-height: 1;
   pointer-events: none;
   transition: transform var(--duration-fast) var(--ease-standard);
@@ -410,7 +421,7 @@ a {
   place-items: center;
   width: 22px;
   height: 22px;
-  font-weight: 700;
+  font-size: 18px;
 }
 
 .nav-label {
@@ -467,7 +478,7 @@ a {
   top: 50%;
   transform: translateY(-50%);
   color: var(--text-muted);
-  font-weight: 700;
+  font-size: 17px;
 }
 
 .search-field input {
@@ -627,7 +638,7 @@ a {
   border-radius: 999px;
   background: var(--status-info-bg);
   color: var(--brand-structure);
-  font-weight: 800;
+  font-size: 22px;
 }
 
 .kpi-icon.is-success {
@@ -1293,7 +1304,7 @@ a {
     border-radius: 8px;
     background: var(--surface-panel-muted);
     color: var(--text-secondary);
-    font-weight: 700;
+    font-size: 17px;
   }
 
   .nav-item {
