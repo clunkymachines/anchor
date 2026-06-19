@@ -63,3 +63,9 @@ Use Go's `log/slog` package for application logs.
 - `Debug`: recurring operational messages. Debug logs should stay quiet by default.
 - `Warn`: recoverable problems that may need attention but do not require immediate intervention, such as malformed JSON.
 - `Error`: serious problems that require immediate human intervention, such as database corruption, crashes, or application bugs.
+
+## License
+
+Anchor is licensed under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
+
+Contributions require a signed [Contributor Copyright Assignment Agreement](CLA.md). See [CONTRIBUTING.md](CONTRIBUTING.md).
