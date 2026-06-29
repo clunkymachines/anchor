@@ -10,13 +10,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// ensureBootstrapData creates the default organisation and admin user needed for first startup.
+// ensureBootstrapData creates the admin user needed for first startup.
 func ensureBootstrapData(ctx context.Context, store *db.Store) error {
-	organisationID, err := ensureDefaultOrganisation(ctx, store)
-	if err != nil {
-		return err
-	}
-
 	count, err := store.UserCount(ctx)
 	if err != nil {
 		return err
@@ -31,13 +26,6 @@ func ensureBootstrapData(ctx context.Context, store *db.Store) error {
 				}
 				slog.Info("granted bootstrap admin access", "email", email)
 			}
-			if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
-				UserID:         user.ID,
-				OrganisationID: organisationID,
-				Role:           db.OrganisationRoleAdmin,
-			}); err != nil {
-				return err
-			}
 		}
 		return nil
 	}
@@ -50,7 +38,7 @@ func ensureBootstrapData(ctx context.Context, store *db.Store) error {
 		return err
 	}
 
-	userID, err := store.CreateUser(ctx, domain.User{
+	_, err = store.CreateUser(ctx, domain.User{
 		Email:        email,
 		Name:         name,
 		PasswordHash: string(passwordHash),
@@ -59,41 +47,7 @@ func ensureBootstrapData(ctx context.Context, store *db.Store) error {
 	if err != nil {
 		return err
 	}
-	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
-		UserID:         userID,
-		OrganisationID: organisationID,
-		Role:           db.OrganisationRoleAdmin,
-	}); err != nil {
-		return err
-	}
 
 	slog.Info("created bootstrap admin user", "email", email)
 	return nil
-}
-
-// ensureDefaultOrganisation returns an existing organisation or creates the configured default.
-func ensureDefaultOrganisation(ctx context.Context, store *db.Store) (int64, error) {
-	count, err := store.OrganisationCount(ctx)
-	if err != nil {
-		return 0, err
-	}
-	if count > 0 {
-		organisations, err := store.ListOrganisations(ctx)
-		if err != nil {
-			return 0, err
-		}
-		if len(organisations) == 0 {
-			return 0, nil
-		}
-		return organisations[0].ID, nil
-	}
-
-	name := envOrDefault("ANCHOR_ORGANISATION_NAME", "Clunky Machines")
-	id, err := store.CreateOrganisation(ctx, domain.Organisation{Name: name})
-	if err != nil {
-		return 0, err
-	}
-
-	slog.Info("created default organisation", "name", name)
-	return id, nil
 }

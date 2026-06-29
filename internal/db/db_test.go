@@ -67,9 +67,19 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 	assertColumns(t, store, "devices", []string{
 		"id",
 		"organisation_id",
-		"model_name",
+		"device_model_id",
 		"software_versions",
 		"is_gateway",
+		"created_at",
+		"updated_at",
+	})
+	assertColumns(t, store, "device_models", []string{
+		"id",
+		"organisation_id",
+		"name",
+		"expected_heartbeat_seconds",
+		"expected_protocol",
+		"expected_release_id",
 		"created_at",
 		"updated_at",
 	})
@@ -574,6 +584,7 @@ func TestSaveDeviceWithMQTTCredential(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Gateway"),
 			ModelName:        "Gateway",
 			SoftwareVersions: domain.SoftwareVersions{"firmware": "1.0.0"},
 			IsGateway:        true,
@@ -643,6 +654,7 @@ func TestDeleteDeviceRemovesMQTTConfig(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Gateway"),
 			ModelName:        "Gateway",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -690,6 +702,7 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -746,6 +759,14 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 	if len(events) != 1 || events[0].ID != eventID || events[0].PayloadJSON != `{"battery":87}` {
 		t.Fatalf("unexpected recent events: %#v", events)
 	}
+
+	detail, err := store.DeviceDetail(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("load device detail: %v", err)
+	}
+	if detail.Device.ExpectedHeartbeatSeconds != 60 || detail.Device.LastEventReceivedMS != 1234 {
+		t.Fatalf("unexpected device heartbeat/event fields: %#v", detail.Device)
+	}
 }
 
 func TestDeviceEventSubscriptionsArePerDevice(t *testing.T) {
@@ -795,6 +816,7 @@ func TestDeviceTaskSubscriptionsArePerDevice(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-a",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -811,6 +833,7 @@ func TestDeviceTaskSubscriptionsArePerDevice(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-b",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -874,6 +897,7 @@ func TestCreateAndListOngoingDeviceTasks(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -973,6 +997,7 @@ func TestListActiveAndRecentDeviceTasksIncludesLastThreeFinished(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -1055,6 +1080,7 @@ func TestCreateDeviceTaskRequiresMatchingOrganisation(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -1085,6 +1111,32 @@ func testOrganisationID(t *testing.T, store *Store) int64 {
 	id, err := store.CreateOrganisation(context.Background(), domain.Organisation{Name: t.Name()})
 	if err != nil {
 		t.Fatalf("create organisation: %v", err)
+	}
+	return id
+}
+
+func testDeviceModelID(t *testing.T, store *Store, organisationID int64, name string) int64 {
+	t.Helper()
+
+	ctx := context.Background()
+	models, err := store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("list device models: %v", err)
+	}
+	for _, model := range models {
+		if model.Name == name {
+			return model.ID
+		}
+	}
+
+	id, err := store.CreateDeviceModel(ctx, domain.DeviceModel{
+		OrganisationID:           organisationID,
+		Name:                     name,
+		ExpectedHeartbeatSeconds: 60,
+		ExpectedProtocol:         "mqtt",
+	})
+	if err != nil {
+		t.Fatalf("create device model: %v", err)
 	}
 	return id
 }

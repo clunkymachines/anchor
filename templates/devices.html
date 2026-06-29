@@ -26,8 +26,7 @@
 							</div>
 							<div>
 								<div class="kpi-label">Online</div>
-								<div class="kpi-value">0</div>
-								<div class="kpi-meta">Pending telemetry</div>
+								<div class="kpi-value">{{.OnlineCount}}</div>
 							</div>
 						</div>
 						<div class="card kpi-card">
@@ -45,7 +44,7 @@
 							</div>
 							<div>
 								<div class="kpi-label">Models</div>
-								<div class="kpi-value">0</div>
+								<div class="kpi-value">{{.DeviceModelCount}}</div>
 							</div>
 						</div>
 					</section>
@@ -84,7 +83,7 @@
 													<span class="muted-text">None</span>
 												{{end}}
 											</td>
-											<td><span class="status-pill status-neutral">{{.Status}}</span></td>
+											<td><span class="status-pill {{.StatusClass}}" title="Last seen: {{.LastSeen}}">{{.Status}}</span></td>
 											<td class="table-actions-cell">
 												<form method="post" action="/devices/delete">
 													<input type="hidden" name="device_id" value="{{.ID}}">

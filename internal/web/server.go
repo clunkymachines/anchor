@@ -72,13 +72,17 @@ type shellPageData struct {
 }
 
 type devicesPageData struct {
-	Shell   shellPageData
-	Devices []deviceView
+	Shell            shellPageData
+	Devices          []deviceView
+	DeviceModelCount int
+	OnlineCount      int
 }
 
 type deviceCreatePageData struct {
-	Shell         shellPageData
-	MQTTFormError string
+	Shell          shellPageData
+	DeviceModels   []deviceModelOptionView
+	MQTTFormError  string
+	DeviceFormNote string
 }
 
 type deviceDetailPageData struct {
@@ -96,6 +100,13 @@ type releasesPageData struct {
 	Shell            shellPageData
 	Releases         []domain.SoftwareRelease
 	ReleaseFormError string
+}
+
+type deviceModelsPageData struct {
+	Shell          shellPageData
+	Models         []deviceModelView
+	Releases       []releaseOptionView
+	ModelFormError string
 }
 
 type otaDeploymentsPageData struct {
@@ -130,11 +141,14 @@ type deviceView struct {
 	IsGateway        bool
 	Communication    []string
 	Status           string
+	StatusClass      string
+	LastSeen         string
 }
 
 type deviceDetailView struct {
 	ID                  string
 	OrganisationID      int64
+	DeviceModelID       int64
 	ModelName           string
 	SoftwareVersions    string
 	IsGateway           bool
@@ -142,6 +156,8 @@ type deviceDetailView struct {
 	TaskTopic           string
 	GatewayPublishTopic string
 	Status              string
+	StatusClass         string
+	LastSeen            string
 }
 
 type mqttCredentialView struct {
@@ -188,6 +204,23 @@ type releaseOptionView struct {
 	Name    string
 	Version string
 	Label   string
+}
+
+type deviceModelOptionView struct {
+	ID                       int64
+	Name                     string
+	ExpectedHeartbeatSeconds int64
+	ExpectedProtocol         string
+	ExpectedReleaseLabel     string
+}
+
+type deviceModelView struct {
+	ID                       int64
+	Name                     string
+	ExpectedHeartbeatSeconds int64
+	ExpectedProtocol         string
+	ExpectedReleaseLabel     string
+	CreatedAt                string
 }
 
 type mqttAuthRequest struct {
@@ -238,6 +271,8 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTaskPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.deviceTaskCancelPost)))
 	mux.Handle("POST /devices/delete", server.requireAuth(http.HandlerFunc(server.deviceDeletePost)))
+	mux.Handle("GET /device-models", server.requireAuth(http.HandlerFunc(server.deviceModels)))
+	mux.Handle("POST /device-models", server.requireAuth(http.HandlerFunc(server.deviceModelsPost)))
 	mux.Handle("GET /releases", server.requireAuth(http.HandlerFunc(server.releases)))
 	mux.Handle("POST /releases", server.requireAuth(http.HandlerFunc(server.releasesPost)))
 	mux.HandleFunc("GET /org/{organisationID}/releases/{releaseID}/binary", server.releaseBinary)
@@ -349,8 +384,15 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device query error", http.StatusInternalServerError)
 		return
 	}
+	deviceModels, err := s.store.ListDeviceModels(r.Context(), shell.SelectedOrganisationID)
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
 
 	views := make([]deviceView, 0, len(devices))
+	now := time.Now()
+	onlineCount := 0
 	for _, device := range devices {
 		communication := []string{}
 		if device.MQTTCredential != nil {
@@ -359,6 +401,10 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		if device.Device.IsGateway {
 			communication = append(communication, "Gateway")
 		}
+		connectivity := deviceConnectivity(device.Device, now)
+		if connectivity.Connected {
+			onlineCount++
+		}
 		views = append(views, deviceView{
 			ID:               device.Device.ID,
 			OrganisationID:   device.Device.OrganisationID,
@@ -366,13 +412,17 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 			SoftwareVersions: formatSoftwareVersions(device.Device.SoftwareVersions),
 			IsGateway:        device.Device.IsGateway,
 			Communication:    communication,
-			Status:           "Unknown",
+			Status:           connectivity.Status,
+			StatusClass:      connectivity.StatusClass,
+			LastSeen:         connectivity.LastSeen,
 		})
 	}
 
 	s.renderDevices(w, r, devicesPageData{
-		Shell:   shell,
-		Devices: views,
+		Shell:            shell,
+		Devices:          views,
+		DeviceModelCount: len(deviceModels),
+		OnlineCount:      onlineCount,
 	})
 }
 
@@ -382,9 +432,12 @@ func (s *Server) deviceNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.renderDeviceNew(w, deviceCreatePageData{
-		Shell: shell,
-	})
+	data, err := s.loadDeviceCreatePageData(r.Context(), shell, shell.SelectedOrganisationID, "")
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderDeviceNew(w, data)
 }
 
 func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
@@ -578,10 +631,9 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deviceID := r.FormValue("device_id")
-	modelName := r.FormValue("model_name")
 	username := r.FormValue("mqtt_username")
 	password := r.FormValue("mqtt_password")
-	if deviceID == "" || modelName == "" || username == "" || password == "" {
+	if deviceID == "" || username == "" || password == "" {
 		s.renderDeviceNewWithError(w, r, "Device ID, model, MQTT username, and password are required.")
 		return
 	}
@@ -595,6 +647,18 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 		s.renderDeviceNewWithError(w, r, "An organisation is required before creating a device.")
 		return
 	}
+	deviceModelID, err := strconv.ParseInt(r.FormValue("device_model_id"), 10, 64)
+	if err != nil || deviceModelID <= 0 {
+		s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "Choose a device model.")
+		return
+	}
+	if _, err := s.store.DeviceModel(r.Context(), deviceModelID, organisationID); errors.Is(err, db.ErrNotFound) {
+		s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "Choose a device model from this organisation.")
+		return
+	} else if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
 
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -606,7 +670,7 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 		Device: domain.Device{
 			ID:               deviceID,
 			OrganisationID:   organisationID,
-			ModelName:        modelName,
+			DeviceModelID:    deviceModelID,
 			SoftwareVersions: domain.SoftwareVersions{},
 			IsGateway:        r.FormValue("is_gateway") == "on",
 		},
@@ -776,6 +840,86 @@ func (s *Server) deviceDeletePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/devices?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) deviceModels(w http.ResponseWriter, r *http.Request) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	data, err := s.loadDeviceModelsPageData(r.Context(), shell, organisationID, "")
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderDeviceModels(w, data)
+}
+
+func (s *Server) deviceModelsPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.Error(w, "missing organisation id", http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	expectedProtocol := strings.TrimSpace(r.FormValue("expected_protocol"))
+	expectedHeartbeatSeconds, err := strconv.ParseInt(r.FormValue("expected_heartbeat_seconds"), 10, 64)
+	if name == "" || expectedProtocol == "" || expectedHeartbeatSeconds <= 0 || err != nil {
+		s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "Name, heartbeat, and protocol are required.")
+		return
+	}
+
+	var expectedReleaseID *int64
+	releaseValue := strings.TrimSpace(r.FormValue("expected_release_id"))
+	if releaseValue != "" {
+		releaseID, err := strconv.ParseInt(releaseValue, 10, 64)
+		if err != nil || releaseID <= 0 {
+			s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "Choose a valid expected release.")
+			return
+		}
+		if _, err := s.store.SoftwareRelease(r.Context(), releaseID, organisationID); errors.Is(err, db.ErrNotFound) {
+			s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "Choose a release from this organisation.")
+			return
+		} else if err != nil {
+			http.Error(w, "release query error", http.StatusInternalServerError)
+			return
+		}
+		expectedReleaseID = &releaseID
+	}
+
+	_, err = s.store.CreateDeviceModel(r.Context(), domain.DeviceModel{
+		OrganisationID:           organisationID,
+		Name:                     name,
+		ExpectedHeartbeatSeconds: expectedHeartbeatSeconds,
+		ExpectedProtocol:         expectedProtocol,
+		ExpectedReleaseID:        expectedReleaseID,
+	})
+	if errors.Is(err, db.ErrConflict) {
+		s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "A device model with this name already exists.")
+		return
+	}
+	if err != nil {
+		http.Error(w, "device model create error", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/device-models?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
 
 func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
@@ -1339,11 +1483,22 @@ func (s *Server) renderDeviceNewWithError(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		organisationID = shell.SelectedOrganisationID
+	}
 
-	s.renderDeviceNew(w, deviceCreatePageData{
-		Shell:         shell,
-		MQTTFormError: message,
-	})
+	s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, message)
+}
+
+func (s *Server) renderDeviceNewForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, message string) {
+	data, err := s.loadDeviceCreatePageData(r.Context(), shell, organisationID, message)
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+
+	s.renderDeviceNew(w, data)
 }
 
 func (s *Server) renderReleasesWithError(w http.ResponseWriter, r *http.Request, message string) {
@@ -1372,6 +1527,15 @@ func (s *Server) renderReleasesForOrganisationWithError(w http.ResponseWriter, r
 		Releases:         releases,
 		ReleaseFormError: message,
 	})
+}
+
+func (s *Server) renderDeviceModelsForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, message string) {
+	data, err := s.loadDeviceModelsPageData(r.Context(), shell, organisationID, message)
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderDeviceModels(w, data)
 }
 
 func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, data devicesPageData) {
@@ -1412,6 +1576,13 @@ func (s *Server) renderDeviceTasks(w http.ResponseWriter, data deviceDetailPageD
 func (s *Server) renderReleases(w http.ResponseWriter, data releasesPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "releases.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderDeviceModels(w http.ResponseWriter, data deviceModelsPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "device_models.html", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
@@ -1543,24 +1714,80 @@ func requestedOrganisationID(value string, organisations []domain.Organisation) 
 	return 0, false
 }
 
+func (s *Server) loadDeviceCreatePageData(ctx context.Context, shell shellPageData, organisationID int64, formError string) (deviceCreatePageData, error) {
+	shell.SelectedOrganisationID = organisationID
+	models, err := s.store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		return deviceCreatePageData{}, err
+	}
+	modelOptions := make([]deviceModelOptionView, 0, len(models))
+	for _, model := range models {
+		modelOptions = append(modelOptions, deviceModelOption(model))
+	}
+
+	note := ""
+	if len(modelOptions) == 0 {
+		note = "Create a device model before registering devices."
+	}
+	return deviceCreatePageData{
+		Shell:          shell,
+		DeviceModels:   modelOptions,
+		MQTTFormError:  formError,
+		DeviceFormNote: note,
+	}, nil
+}
+
+func (s *Server) loadDeviceModelsPageData(ctx context.Context, shell shellPageData, organisationID int64, formError string) (deviceModelsPageData, error) {
+	shell.SelectedOrganisationID = organisationID
+	models, err := s.store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		return deviceModelsPageData{}, err
+	}
+	modelViews := make([]deviceModelView, 0, len(models))
+	for _, model := range models {
+		modelViews = append(modelViews, deviceModelView{
+			ID:                       model.ID,
+			Name:                     model.Name,
+			ExpectedHeartbeatSeconds: model.ExpectedHeartbeatSeconds,
+			ExpectedProtocol:         model.ExpectedProtocol,
+			ExpectedReleaseLabel:     expectedReleaseLabel(model),
+			CreatedAt:                model.CreatedAt,
+		})
+	}
+	releases, err := s.loadReleaseOptions(ctx, organisationID)
+	if err != nil {
+		return deviceModelsPageData{}, err
+	}
+	return deviceModelsPageData{
+		Shell:          shell,
+		Models:         modelViews,
+		Releases:       releases,
+		ModelFormError: formError,
+	}, nil
+}
+
 func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageData, deviceID string, organisationID int64, taskFormError string) (deviceDetailPageData, error) {
 	detail, err := s.store.DeviceDetail(ctx, deviceID, organisationID)
 	if err != nil {
 		return deviceDetailPageData{}, err
 	}
+	connectivity := deviceConnectivity(detail.Device, time.Now())
 
 	data := deviceDetailPageData{
 		Shell: shell,
 		Device: deviceDetailView{
 			ID:                  detail.Device.ID,
 			OrganisationID:      detail.Device.OrganisationID,
+			DeviceModelID:       detail.Device.DeviceModelID,
 			ModelName:           detail.Device.ModelName,
 			SoftwareVersions:    formatSoftwareVersions(detail.Device.SoftwareVersions),
 			IsGateway:           detail.Device.IsGateway,
 			DataTopic:           mqttDataTopic(detail.Device.OrganisationID, detail.Device.ID),
 			TaskTopic:           mqttTaskTopic(detail.Device.OrganisationID, detail.Device.ID),
 			GatewayPublishTopic: "dev/" + strconv.FormatInt(detail.Device.OrganisationID, 10) + "/{deviceID}/data",
-			Status:              "Unknown",
+			Status:              connectivity.Status,
+			StatusClass:         connectivity.StatusClass,
+			LastSeen:            connectivity.LastSeen,
 		},
 		TaskFormError: taskFormError,
 	}
@@ -1669,6 +1896,26 @@ func (s *Server) loadReleaseOptions(ctx context.Context, organisationID int64) (
 	return options, nil
 }
 
+func deviceModelOption(model domain.DeviceModel) deviceModelOptionView {
+	return deviceModelOptionView{
+		ID:                       model.ID,
+		Name:                     model.Name,
+		ExpectedHeartbeatSeconds: model.ExpectedHeartbeatSeconds,
+		ExpectedProtocol:         model.ExpectedProtocol,
+		ExpectedReleaseLabel:     expectedReleaseLabel(model),
+	}
+}
+
+func expectedReleaseLabel(model domain.DeviceModel) string {
+	if model.ExpectedReleaseID == nil {
+		return ""
+	}
+	if model.ExpectedReleaseName == "" && model.ExpectedReleaseVersion == "" {
+		return strconv.FormatInt(*model.ExpectedReleaseID, 10)
+	}
+	return strings.TrimSpace(model.ExpectedReleaseName + " " + model.ExpectedReleaseVersion)
+}
+
 func (s *Server) findReleaseOption(ctx context.Context, organisationID int64, releaseID int64) (releaseOptionView, bool, error) {
 	releases, err := s.loadReleaseOptions(ctx, organisationID)
 	if err != nil {
@@ -1724,6 +1971,39 @@ func deviceTaskStatusClass(status string) string {
 		return "status-danger"
 	default:
 		return "status-neutral"
+	}
+}
+
+type deviceConnectivityView struct {
+	Connected   bool
+	Status      string
+	StatusClass string
+	LastSeen    string
+}
+
+func deviceConnectivity(device domain.Device, now time.Time) deviceConnectivityView {
+	if device.LastEventReceivedMS == 0 {
+		return deviceConnectivityView{
+			Status:      "Disconnected",
+			StatusClass: "status-danger",
+			LastSeen:    "Never",
+		}
+	}
+
+	lastSeenAt := time.UnixMilli(device.LastEventReceivedMS)
+	connected := now.Sub(lastSeenAt) <= time.Duration(device.ExpectedHeartbeatSeconds)*time.Second
+	if connected {
+		return deviceConnectivityView{
+			Connected:   true,
+			Status:      "Connected",
+			StatusClass: "status-success",
+			LastSeen:    formatUnixMS(device.LastEventReceivedMS),
+		}
+	}
+	return deviceConnectivityView{
+		Status:      "Disconnected",
+		StatusClass: "status-danger",
+		LastSeen:    formatUnixMS(device.LastEventReceivedMS),
 	}
 }
 

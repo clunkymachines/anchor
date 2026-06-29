@@ -79,6 +79,14 @@
 			{{if ne .DeviceBadge ""}}<span class="nav-badge">{{.DeviceBadge}}</span>{{end}}
 		</a>
 		<a
+			class="nav-item {{if eq .Active "device-models"}}is-active{{end}}"
+			{{if eq .Active "device-models"}}aria-current="page"{{end}}
+			href="/device-models?organisation_id={{.Shell.SelectedOrganisationID}}"
+		>
+			<span class="nav-icon" aria-hidden="true">{{template "icon_layers_3" .}}</span>
+			<span class="nav-label">Device models</span>
+		</a>
+		<a
 			class="nav-item {{if eq .Active "releases"}}is-active{{end}}"
 			{{if eq .Active "releases"}}aria-current="page"{{end}}
 			href="/releases?organisation_id={{.Shell.SelectedOrganisationID}}"

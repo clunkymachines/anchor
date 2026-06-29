@@ -36,6 +36,7 @@ func TestHandlePublishRecordsEventAndTwin(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -100,6 +101,7 @@ func TestHandlePublishUpdatesTaskStatus(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -197,4 +199,30 @@ func TestMQTTReconnectBackoffDoesNotPanic(t *testing.T) {
 
 func int64String(value int64) string {
 	return strconv.FormatInt(value, 10)
+}
+
+func testDeviceModelID(t *testing.T, store *db.Store, organisationID int64, name string) int64 {
+	t.Helper()
+
+	ctx := context.Background()
+	models, err := store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("list device models: %v", err)
+	}
+	for _, model := range models {
+		if model.Name == name {
+			return model.ID
+		}
+	}
+
+	id, err := store.CreateDeviceModel(ctx, domain.DeviceModel{
+		OrganisationID:           organisationID,
+		Name:                     name,
+		ExpectedHeartbeatSeconds: 60,
+		ExpectedProtocol:         "mqtt",
+	})
+	if err != nil {
+		t.Fatalf("create device model: %v", err)
+	}
+	return id
 }

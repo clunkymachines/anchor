@@ -58,6 +58,7 @@ func TestDeviceHandlersRejectOrganisationsOutsideUserMembership(t *testing.T) {
 		Device: domain.Device{
 			ID:               "forbidden-device",
 			OrganisationID:   forbiddenOrgID,
+			DeviceModelID:    testDeviceModelID(t, store, forbiddenOrgID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -158,6 +159,7 @@ func TestDeviceTaskPostCreatesFOTATaskWithReleaseBinaryPath(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -219,12 +221,164 @@ func TestDeviceTaskPostCreatesFOTATaskWithReleaseBinaryPath(t *testing.T) {
 	}
 }
 
+func TestDeviceModelsPostCreatesModelWithExpectedRelease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{
+		Email:        "member@example.com",
+		Name:         "Member",
+		PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
+		UserID:         userID,
+		OrganisationID: organisationID,
+	}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		Name:                "firmware",
+		Version:             "1.2.3",
+		ArtifactPath:        "1/firmware.bin",
+		ArtifactFilename:    "firmware.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+
+	server := &Server{store: store}
+	req := formRequest(http.MethodPost, "/device-models", url.Values{
+		"organisation_id":            {strconv.FormatInt(organisationID, 10)},
+		"name":                       {"Gateway v1"},
+		"expected_heartbeat_seconds": {"120"},
+		"expected_protocol":          {"mqtt"},
+		"expected_release_id":        {strconv.FormatInt(releaseID, 10)},
+	}, domain.User{ID: userID, Email: "member@example.com"})
+	res := httptest.NewRecorder()
+	server.deviceModelsPost(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after model create, got %d body=%q", res.Code, res.Body.String())
+	}
+
+	models, err := store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("list device models: %v", err)
+	}
+	if len(models) != 1 || models[0].Name != "Gateway v1" || models[0].ExpectedHeartbeatSeconds != 120 || models[0].ExpectedProtocol != "mqtt" {
+		t.Fatalf("unexpected device model: %#v", models)
+	}
+	if models[0].ExpectedReleaseID == nil || *models[0].ExpectedReleaseID != releaseID || models[0].ExpectedReleaseVersion != "1.2.3" {
+		t.Fatalf("unexpected expected release on model: %#v", models[0])
+	}
+}
+
+func TestDevicesPostCreatesDeviceWithSelectedModel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{
+		Email:        "member@example.com",
+		Name:         "Member",
+		PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
+		UserID:         userID,
+		OrganisationID: organisationID,
+	}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	modelID := testDeviceModelID(t, store, organisationID, "Sensor")
+
+	server := &Server{store: store}
+	req := formRequest(http.MethodPost, "/devices", url.Values{
+		"organisation_id": {strconv.FormatInt(organisationID, 10)},
+		"device_id":       {"device-001"},
+		"device_model_id": {strconv.FormatInt(modelID, 10)},
+		"mqtt_username":   {"device-001"},
+		"mqtt_password":   {"secret"},
+	}, domain.User{ID: userID, Email: "member@example.com"})
+	res := httptest.NewRecorder()
+	server.devicesPost(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after device create, got %d body=%q", res.Code, res.Body.String())
+	}
+
+	detail, err := store.DeviceDetail(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("load device detail: %v", err)
+	}
+	if detail.Device.DeviceModelID != modelID || detail.Device.ModelName != "Sensor" {
+		t.Fatalf("unexpected device model link: %#v", detail.Device)
+	}
+}
+
 func TestFOTADownloadURLDefaultsToReleaseBinaryPath(t *testing.T) {
 	t.Parallel()
 
 	server := &Server{}
 	if got, want := server.fotaDownloadURL(7, 42), "/org/42/releases/7/binary"; got != want {
 		t.Fatalf("unexpected default FOTA download URL: got %q want %q", got, want)
+	}
+}
+
+func TestDeviceConnectivityUsesModelHeartbeatAndLatestEvent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	connected := deviceConnectivity(domain.Device{
+		ExpectedHeartbeatSeconds: 60,
+		LastEventReceivedMS:      now.Add(-30 * time.Second).UnixMilli(),
+	}, now)
+	if !connected.Connected || connected.Status != "Connected" || connected.StatusClass != "status-success" {
+		t.Fatalf("expected connected status, got %#v", connected)
+	}
+
+	disconnected := deviceConnectivity(domain.Device{
+		ExpectedHeartbeatSeconds: 60,
+		LastEventReceivedMS:      now.Add(-61 * time.Second).UnixMilli(),
+	}, now)
+	if disconnected.Connected || disconnected.Status != "Disconnected" || disconnected.StatusClass != "status-danger" {
+		t.Fatalf("expected disconnected status, got %#v", disconnected)
+	}
+
+	neverSeen := deviceConnectivity(domain.Device{ExpectedHeartbeatSeconds: 60}, now)
+	if neverSeen.Connected || neverSeen.LastSeen != "Never" {
+		t.Fatalf("expected never-seen disconnected status, got %#v", neverSeen)
 	}
 }
 
@@ -493,6 +647,7 @@ func TestDeviceTaskCancelPostCancelsOngoingTask(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -652,6 +807,32 @@ func formRequest(method string, target string, values url.Values, user domain.Us
 	req := httptest.NewRequest(method, target, strings.NewReader(values.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey, user))
+}
+
+func testDeviceModelID(t *testing.T, store *db.Store, organisationID int64, name string) int64 {
+	t.Helper()
+
+	ctx := context.Background()
+	models, err := store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("list device models: %v", err)
+	}
+	for _, model := range models {
+		if model.Name == name {
+			return model.ID
+		}
+	}
+
+	id, err := store.CreateDeviceModel(ctx, domain.DeviceModel{
+		OrganisationID:           organisationID,
+		Name:                     name,
+		ExpectedHeartbeatSeconds: 60,
+		ExpectedProtocol:         "mqtt",
+	})
+	if err != nil {
+		t.Fatalf("create device model: %v", err)
+	}
+	return id
 }
 
 func containsOrganisationID(organisations []domain.Organisation, organisationID int64) bool {

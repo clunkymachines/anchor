@@ -53,7 +53,11 @@
 									</div>
 									<div class="key-value-row">
 										<dt class="key-value-label">Status</dt>
-										<dd class="key-value-value"><span class="status-pill status-neutral">{{.Device.Status}}</span></dd>
+										<dd class="key-value-value"><span class="status-pill {{.Device.StatusClass}}">{{.Device.Status}}</span></dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Last seen</dt>
+										<dd class="key-value-value value-mono">{{.Device.LastSeen}}</dd>
 									</div>
 								</dl>
 							</div>

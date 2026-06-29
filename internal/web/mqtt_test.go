@@ -42,6 +42,7 @@ func TestMQTTAuthAndACL(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Gateway"),
 			ModelName:        "Gateway",
 			SoftwareVersions: domain.SoftwareVersions{},
 			IsGateway:        true,
@@ -59,6 +60,7 @@ func TestMQTTAuthAndACL(t *testing.T) {
 		Device: domain.Device{
 			ID:               "device-002",
 			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},

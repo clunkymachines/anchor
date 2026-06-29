@@ -1,0 +1,102 @@
+{{template "app_page_start" (dict "Title" "Device models - Anchor" "Shell" .Shell "Active" "device-models" "OrganisationAction" "/device-models" "SearchPlaceholder" "Search device models" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Device models</h1>
+							<p class="page-subtitle">Shared expectations for groups of devices.</p>
+						</div>
+					</header>
+
+					<form class="device-create-form" method="post" action="/device-models">
+						<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Create device model</h2>
+									<p class="card-subtitle">Common configuration for devices in this organisation</p>
+								</div>
+							</header>
+							<div class="card-body">
+								{{if .ModelFormError}}
+									<p class="form-error">{{.ModelFormError}}</p>
+								{{end}}
+								<div class="form-grid">
+									<label class="field">
+										<span class="field-label">Name</span>
+										<input class="input" name="name" placeholder="Gateway v1" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Heartbeat seconds</span>
+										<input class="input" name="expected_heartbeat_seconds" type="number" min="1" value="60" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Protocol</span>
+										<select class="input" name="expected_protocol" required>
+											<option value="mqtt">MQTT</option>
+											<option value="coap">CoAP</option>
+											<option value="lwm2m">LwM2M</option>
+											<option value="ble">BLE</option>
+										</select>
+									</label>
+									<label class="field">
+										<span class="field-label">Expected release</span>
+										<select class="input" name="expected_release_id">
+											<option value="">None</option>
+											{{range .Releases}}
+												<option value="{{.ID}}">{{.Label}}</option>
+											{{end}}
+										</select>
+									</label>
+								</div>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Create model</button>
+								</div>
+							</div>
+						</section>
+					</form>
+
+					<section class="card data-table-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Models</h2>
+								<p class="card-subtitle">{{len .Models}} device models registered</p>
+							</div>
+						</header>
+
+						<div class="data-table-wrapper">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th scope="col">Name</th>
+										<th scope="col">Heartbeat</th>
+										<th scope="col">Protocol</th>
+										<th scope="col">Expected release</th>
+										<th scope="col">Created</th>
+									</tr>
+								</thead>
+								<tbody>
+									{{range .Models}}
+										<tr>
+											<td>{{.Name}}</td>
+											<td class="value-mono">{{.ExpectedHeartbeatSeconds}}s</td>
+											<td><span class="protocol-pill">{{.ExpectedProtocol}}</span></td>
+											<td>
+												{{if .ExpectedReleaseLabel}}
+													<span class="value-mono">{{.ExpectedReleaseLabel}}</span>
+												{{else}}
+													<span class="muted-text">None</span>
+												{{end}}
+											</td>
+											<td class="value-mono">{{.CreatedAt}}</td>
+										</tr>
+									{{else}}
+										<tr>
+											<td class="empty-table-cell" colspan="5">No device models registered yet.</td>
+										</tr>
+									{{end}}
+								</tbody>
+							</table>
+						</div>
+					</section>
+				</main>
+{{template "app_page_end" .}}

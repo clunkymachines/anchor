@@ -68,12 +68,39 @@ type Device struct {
 	ID string
 	// OrganisationID identifies the organisation that owns the device.
 	OrganisationID int64
-	// ModelName is the device model name shown to users.
+	// DeviceModelID identifies the required model definition for this device.
+	DeviceModelID int64
+	// ModelName is the linked device model name shown to users.
 	ModelName string
+	// ExpectedHeartbeatSeconds is copied from the linked model for connectivity checks.
+	ExpectedHeartbeatSeconds int64
+	// LastEventReceivedMS is the latest received device event timestamp in Unix milliseconds.
+	LastEventReceivedMS int64
 	// SoftwareVersions contains reported component versions.
 	SoftwareVersions SoftwareVersions
 	// IsGateway allows the device to publish data for other devices in its organisation.
 	IsGateway bool
+}
+
+type DeviceModel struct {
+	// ID is the internal model identifier.
+	ID int64
+	// OrganisationID identifies the organisation that owns the model.
+	OrganisationID int64
+	// Name is the model display name.
+	Name string
+	// ExpectedHeartbeatSeconds is the expected communication interval in seconds.
+	ExpectedHeartbeatSeconds int64
+	// ExpectedProtocol is the protocol devices of this model are expected to use.
+	ExpectedProtocol string
+	// ExpectedReleaseID optionally identifies the expected software release.
+	ExpectedReleaseID *int64
+	// ExpectedReleaseName is populated when listing models with release details.
+	ExpectedReleaseName string
+	// ExpectedReleaseVersion is populated when listing models with release details.
+	ExpectedReleaseVersion string
+	// CreatedAt is the model creation timestamp.
+	CreatedAt string
 }
 
 type DeviceMQTTCredential struct {

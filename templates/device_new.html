@@ -20,6 +20,9 @@
 								</div>
 							</header>
 							<div class="card-body">
+								{{if .DeviceFormNote}}
+									<p class="form-error">{{.DeviceFormNote}}</p>
+								{{end}}
 								<div class="form-grid">
 									<label class="field">
 										<span class="field-label">Device ID</span>
@@ -27,7 +30,12 @@
 									</label>
 									<label class="field">
 										<span class="field-label">Model</span>
-										<input class="input" name="model_name" placeholder="Gateway v1" required>
+										<select class="input" name="device_model_id" required>
+											<option value="">Choose a model</option>
+											{{range .DeviceModels}}
+												<option value="{{.ID}}">{{.Name}} - {{.ExpectedProtocol}} - {{.ExpectedHeartbeatSeconds}}s{{if .ExpectedReleaseLabel}} - {{.ExpectedReleaseLabel}}{{end}}</option>
+											{{end}}
+										</select>
 									</label>
 								</div>
 							</div>
