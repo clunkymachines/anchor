@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strconv"
 	"sync"
 )
 
@@ -63,4 +64,22 @@ func (s *Store) SubscribeDeviceEvents(ctx context.Context, deviceID string) (<-c
 
 func (s *Store) SubscribeDeviceTasks(ctx context.Context, deviceID string) (<-chan struct{}, func()) {
 	return s.tasks.subscribe(ctx, deviceID)
+}
+
+func (s *Store) SubscribeReleaseCVEScans(ctx context.Context, organisationID int64, releaseID int64) (<-chan struct{}, func()) {
+	if s.scans == nil {
+		s.scans = newDeviceEventNotifier()
+	}
+	return s.scans.subscribe(ctx, releaseScanEventKey(organisationID, releaseID))
+}
+
+func (s *Store) publishReleaseCVEScan(organisationID int64, releaseID int64) {
+	if s.scans == nil {
+		return
+	}
+	s.scans.publish(releaseScanEventKey(organisationID, releaseID))
+}
+
+func releaseScanEventKey(organisationID int64, releaseID int64) string {
+	return strconv.FormatInt(organisationID, 10) + ":" + strconv.FormatInt(releaseID, 10)
 }

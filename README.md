@@ -53,7 +53,17 @@ Configure the internal client with:
 
 Ingestion uses MQTT 5 content type metadata. If the content type contains `json` or `cbor`, Anchor decodes that format. If no content type is provided, Anchor tries CBOR first, then JSON. Decoded object payloads are flattened into twin property paths.
 
+When a decoded top-level `firmware` telemetry value is a string, Anchor trims surrounding whitespace and stores it as `devices.software_versions["firmware"]`. Non-string `firmware` values remain telemetry only. This reported firmware version is used to match devices to model-scoped firmware releases for CVE status.
+
 When the broker uses Anchor's `/mqtt/auth` and `/mqtt/acl` endpoints, the configured internal client may subscribe to `dev/+/+/data`, receive matching telemetry topics, and publish task messages to `dev/{orgID}/{deviceID}/task`. It is not allowed to publish device data or become a superuser.
+
+## CVE scanning
+
+Firmware releases can include optional `.spdx` SBOM files. Anchor stores those files with the release artifacts and scans them asynchronously for CVEs when an SBOM is present or manually rescanned from the release detail page.
+
+Anchor invokes the external Grype CLI instead of embedding scanner code. Install `grype` on the server `PATH`, or set `ANCHOR_GRYPE_PATH` to the scanner binary path. If Grype is missing or exits with an error, Anchor records the scan run as failed and leaves manual rescan available.
+
+Scan results are scoped to the current SBOM set for a release. Replacing the SBOM removes the old SPDX files, clears prior scan runs and findings for that release, and enqueues a new scan.
 
 ## Logging
 

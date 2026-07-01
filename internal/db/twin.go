@@ -3,7 +3,9 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"anchor/internal/domain"
 )
@@ -64,6 +66,11 @@ func (s *Store) RecordDeviceEvent(ctx context.Context, event domain.DeviceEvent,
 		if err := upsertDeviceTwinProperty(ctx, tx, s.dialect, property); err != nil {
 			return 0, err
 		}
+		if firmwareVersion, ok := firmwareVersionFromTelemetryProperty(property); ok {
+			if err := updateDeviceFirmwareVersion(ctx, tx, s.dialect, event.DeviceID, firmwareVersion); err != nil {
+				return 0, err
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -71,6 +78,17 @@ func (s *Store) RecordDeviceEvent(ctx context.Context, event domain.DeviceEvent,
 	}
 	s.events.publish(event.DeviceID)
 	return eventID, nil
+}
+
+func firmwareVersionFromTelemetryProperty(property domain.DeviceTwinProperty) (string, bool) {
+	if property.Path != "firmware" || property.ValueType != "string" {
+		return "", false
+	}
+	var version string
+	if err := json.Unmarshal([]byte(property.ValueJSON), &version); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(version), true
 }
 
 func (s *Store) ListDeviceTwinProperties(ctx context.Context, deviceID string, organisationID int64) ([]domain.DeviceTwinProperty, error) {
@@ -279,6 +297,33 @@ func upsertDeviceTwinProperty(ctx context.Context, runner queryRunner, dialect D
 			property.TSReceivedMS,
 			property.Protocol,
 			property.SourcePath,
+		)
+		return err
+	default:
+		return fmt.Errorf("unsupported db dialect %q", dialect)
+	}
+}
+
+func updateDeviceFirmwareVersion(ctx context.Context, runner queryRunner, dialect Dialect, deviceID string, version string) error {
+	switch dialect {
+	case DialectSQLite:
+		_, err := runner.ExecContext(ctx,
+			`UPDATE devices
+			SET software_versions = json_set(software_versions, '$.firmware', ?),
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?`,
+			version,
+			deviceID,
+		)
+		return err
+	case DialectPostgres, DialectPostgreSQL:
+		_, err := runner.ExecContext(ctx,
+			`UPDATE devices
+			SET software_versions = jsonb_set(software_versions, '{firmware}', to_jsonb($1::text), true),
+				updated_at = NOW()
+			WHERE id = $2`,
+			version,
+			deviceID,
 		)
 		return err
 	default:

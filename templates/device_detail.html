@@ -52,6 +52,10 @@
 										<dd class="key-value-value value-mono">{{.Device.SoftwareVersions}}</dd>
 									</div>
 									<div class="key-value-row">
+										<dt class="key-value-label">Firmware</dt>
+										<dd class="key-value-value value-mono">{{if .Device.FirmwareVersion}}{{.Device.FirmwareVersion}}{{else}}<span class="muted-text">Unknown</span>{{end}}</dd>
+									</div>
+									<div class="key-value-row">
 										<dt class="key-value-label">Status</dt>
 										<dd class="key-value-value"><span class="status-pill {{.Device.StatusClass}}">{{.Device.Status}}</span></dd>
 									</div>
@@ -60,6 +64,40 @@
 										<dd class="key-value-value value-mono">{{.Device.LastSeen}}</dd>
 									</div>
 								</dl>
+							</div>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">CVE status</h2>
+									<p class="card-subtitle">Matched firmware release</p>
+								</div>
+							</header>
+							<div class="card-body">
+								<dl class="key-value-list">
+									<div class="key-value-row">
+										<dt class="key-value-label">Status</dt>
+										<dd class="key-value-value"><span class="status-pill {{.Device.CVEStatus.StatusClass}}">{{.Device.CVEStatus.Label}}{{if .Device.CVEStatus.HighestLabel}} · {{.Device.CVEStatus.HighestLabel}}{{end}}</span></dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Active CVEs</dt>
+										<dd class="key-value-value value-mono">{{.Device.CVEStatus.ActiveCount}}</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Release</dt>
+										<dd class="key-value-value">
+											{{if .Device.MatchedReleaseURL}}
+												<a class="table-link" href="{{.Device.MatchedReleaseURL}}">{{.Device.MatchedReleaseLabel}}</a>
+											{{else}}
+												<span class="muted-text">No matching release</span>
+											{{end}}
+										</dd>
+									</div>
+								</dl>
+								{{if .Device.CVEStatus.Warning}}
+									<p class="form-error">{{.Device.CVEStatus.Warning}}</p>
+								{{end}}
 							</div>
 						</section>
 

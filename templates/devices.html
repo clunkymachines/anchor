@@ -65,6 +65,7 @@
 										<th scope="col">ID</th>
 										<th scope="col">Model</th>
 										<th scope="col">Software</th>
+										<th scope="col">CVE</th>
 										<th scope="col">Communication</th>
 										<th scope="col">Status</th>
 										<th scope="col" class="table-action-column">Actions</th>
@@ -76,6 +77,7 @@
 											<td class="value-mono"><a class="table-link" href="/devices/{{.ID}}?organisation_id={{$.Shell.SelectedOrganisationID}}">{{.ID}}</a></td>
 											<td>{{.ModelName}}</td>
 											<td class="value-mono">{{.SoftwareVersions}}</td>
+											<td><span class="status-pill {{.CVEStatus.StatusClass}}">{{.CVEStatus.Label}}{{if .CVEStatus.HighestLabel}} · {{.CVEStatus.HighestLabel}}{{end}}</span></td>
 											<td>
 												{{range .Communication}}
 													<span class="protocol-pill">{{.}}</span>
@@ -94,7 +96,7 @@
 										</tr>
 									{{else}}
 										<tr>
-											<td class="empty-table-cell" colspan="6">No devices registered yet.</td>
+											<td class="empty-table-cell" colspan="7">No devices registered yet.</td>
 										</tr>
 									{{end}}
 								</tbody>

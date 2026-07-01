@@ -38,6 +38,7 @@ type Store struct {
 	dialect Dialect
 	events  *deviceEventNotifier
 	tasks   *deviceEventNotifier
+	scans   *deviceEventNotifier
 }
 
 // Open creates a store, configures the database connection, verifies it, and applies the schema.
@@ -67,6 +68,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		dialect: cfg.Dialect,
 		events:  newDeviceEventNotifier(),
 		tasks:   newDeviceEventNotifier(),
+		scans:   newDeviceEventNotifier(),
 	}
 
 	if cfg.Dialect == DialectSQLite {
@@ -219,7 +221,7 @@ func (d Dialect) schemaStatements() ([]string, error) {
 			`CREATE TABLE IF NOT EXISTS software_releases (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
-				name TEXT NOT NULL,
+				device_model_id INTEGER NOT NULL,
 				version TEXT NOT NULL,
 				artifact_path TEXT NOT NULL,
 				artifact_filename TEXT NOT NULL,
@@ -227,7 +229,20 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				artifact_size_bytes INTEGER NOT NULL,
 				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				UNIQUE (organisation_id, id),
-				UNIQUE (organisation_id, name, version)
+				UNIQUE (organisation_id, device_model_id, version)
+			);`,
+			`CREATE TABLE IF NOT EXISTS software_release_sboms (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				organisation_id INTEGER NOT NULL,
+				release_id INTEGER NOT NULL,
+				file_count INTEGER NOT NULL CHECK (file_count > 0),
+				total_size_bytes INTEGER NOT NULL CHECK (total_size_bytes >= 0),
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE (organisation_id, id),
+				UNIQUE (organisation_id, release_id),
+				UNIQUE (organisation_id, release_id, id),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE
 			);`,
 			`CREATE TABLE IF NOT EXISTS device_models (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,6 +324,48 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE
 			);`,
+			`CREATE TABLE IF NOT EXISTS cve_scan_runs (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				organisation_id INTEGER NOT NULL,
+				release_id INTEGER NOT NULL,
+				release_sbom_id INTEGER NOT NULL,
+				trigger_source TEXT NOT NULL CHECK (trigger_source IN ('auto', 'manual')),
+				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed')),
+				error_message TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				started_at TEXT,
+				finished_at TEXT,
+				UNIQUE (organisation_id, id),
+				UNIQUE (organisation_id, release_id, id),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE,
+				FOREIGN KEY (organisation_id, release_id, release_sbom_id) REFERENCES software_release_sboms(organisation_id, release_id, id) ON DELETE CASCADE
+			);`,
+			`CREATE TABLE IF NOT EXISTS cve_scan_findings (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				organisation_id INTEGER NOT NULL,
+				release_id INTEGER NOT NULL,
+				scan_run_id INTEGER NOT NULL,
+				cve_id TEXT NOT NULL,
+				severity TEXT NOT NULL,
+				package_name TEXT NOT NULL,
+				installed_version TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE (scan_run_id, cve_id, package_name, installed_version),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE,
+				FOREIGN KEY (organisation_id, release_id, scan_run_id) REFERENCES cve_scan_runs(organisation_id, release_id, id) ON DELETE CASCADE
+			);`,
+			`CREATE TABLE IF NOT EXISTS release_cve_waivers (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				organisation_id INTEGER NOT NULL,
+				release_id INTEGER NOT NULL,
+				cve_id TEXT NOT NULL,
+				note TEXT NOT NULL DEFAULT '',
+				user_id INTEGER,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE (organisation_id, release_id, cve_id),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE
+			);`,
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY,
 				user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -328,8 +385,14 @@ func (d Dialect) schemaStatements() ([]string, error) {
 			`CREATE INDEX IF NOT EXISTS device_twin_properties_path_idx ON device_twin_properties(path);`,
 			`CREATE INDEX IF NOT EXISTS device_tasks_device_status_created_idx ON device_tasks(device_id, status, created_at DESC);`,
 			`CREATE INDEX IF NOT EXISTS software_releases_organisation_id_idx ON software_releases(organisation_id);`,
+			`CREATE INDEX IF NOT EXISTS software_release_sboms_release_idx ON software_release_sboms(organisation_id, release_id);`,
 			`CREATE INDEX IF NOT EXISTS ota_deployments_organisation_status_idx ON ota_deployments(organisation_id, status);`,
 			`CREATE INDEX IF NOT EXISTS ota_deployments_status_idx ON ota_deployments(status);`,
+			`CREATE INDEX IF NOT EXISTS cve_scan_runs_release_created_idx ON cve_scan_runs(organisation_id, release_id, created_at DESC, id DESC);`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS cve_scan_runs_one_active_idx ON cve_scan_runs(organisation_id, release_id) WHERE status IN ('pending', 'running');`,
+			`CREATE INDEX IF NOT EXISTS cve_scan_findings_run_idx ON cve_scan_findings(scan_run_id);`,
+			`CREATE INDEX IF NOT EXISTS cve_scan_findings_release_cve_idx ON cve_scan_findings(organisation_id, release_id, cve_id);`,
+			`CREATE INDEX IF NOT EXISTS release_cve_waivers_release_idx ON release_cve_waivers(organisation_id, release_id);`,
 			`CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);`,
 			`CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);`,
 		}, nil
@@ -370,7 +433,7 @@ func (d Dialect) schemaStatements() ([]string, error) {
 			`CREATE TABLE IF NOT EXISTS software_releases (
 				id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
 				organisation_id BIGINT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
-				name TEXT NOT NULL,
+				device_model_id BIGINT NOT NULL,
 				version TEXT NOT NULL,
 				artifact_path TEXT NOT NULL,
 				artifact_filename TEXT NOT NULL,
@@ -378,7 +441,20 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				artifact_size_bytes BIGINT NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				UNIQUE (organisation_id, id),
-				UNIQUE (organisation_id, name, version)
+				UNIQUE (organisation_id, device_model_id, version)
+			);`,
+			`CREATE TABLE IF NOT EXISTS software_release_sboms (
+				id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+				organisation_id BIGINT NOT NULL,
+				release_id BIGINT NOT NULL,
+				file_count BIGINT NOT NULL CHECK (file_count > 0),
+				total_size_bytes BIGINT NOT NULL CHECK (total_size_bytes >= 0),
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (organisation_id, id),
+				UNIQUE (organisation_id, release_id),
+				UNIQUE (organisation_id, release_id, id),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE
 			);`,
 			`CREATE TABLE IF NOT EXISTS device_models (
 				id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -460,6 +536,48 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE
 			);`,
+			`CREATE TABLE IF NOT EXISTS cve_scan_runs (
+				id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+				organisation_id BIGINT NOT NULL,
+				release_id BIGINT NOT NULL,
+				release_sbom_id BIGINT NOT NULL,
+				trigger_source TEXT NOT NULL CHECK (trigger_source IN ('auto', 'manual')),
+				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed')),
+				error_message TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				started_at TIMESTAMPTZ,
+				finished_at TIMESTAMPTZ,
+				UNIQUE (organisation_id, id),
+				UNIQUE (organisation_id, release_id, id),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE,
+				FOREIGN KEY (organisation_id, release_id, release_sbom_id) REFERENCES software_release_sboms(organisation_id, release_id, id) ON DELETE CASCADE
+			);`,
+			`CREATE TABLE IF NOT EXISTS cve_scan_findings (
+				id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+				organisation_id BIGINT NOT NULL,
+				release_id BIGINT NOT NULL,
+				scan_run_id BIGINT NOT NULL,
+				cve_id TEXT NOT NULL,
+				severity TEXT NOT NULL,
+				package_name TEXT NOT NULL,
+				installed_version TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (scan_run_id, cve_id, package_name, installed_version),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE,
+				FOREIGN KEY (organisation_id, release_id, scan_run_id) REFERENCES cve_scan_runs(organisation_id, release_id, id) ON DELETE CASCADE
+			);`,
+			`CREATE TABLE IF NOT EXISTS release_cve_waivers (
+				id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+				organisation_id BIGINT NOT NULL,
+				release_id BIGINT NOT NULL,
+				cve_id TEXT NOT NULL,
+				note TEXT NOT NULL DEFAULT '',
+				user_id BIGINT,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (organisation_id, release_id, cve_id),
+				FOREIGN KEY (organisation_id, release_id) REFERENCES software_releases(organisation_id, id) ON DELETE CASCADE
+			);`,
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY,
 				user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -479,8 +597,14 @@ func (d Dialect) schemaStatements() ([]string, error) {
 			`CREATE INDEX IF NOT EXISTS device_twin_properties_path_idx ON device_twin_properties(path);`,
 			`CREATE INDEX IF NOT EXISTS device_tasks_device_status_created_idx ON device_tasks(device_id, status, created_at DESC);`,
 			`CREATE INDEX IF NOT EXISTS software_releases_organisation_id_idx ON software_releases(organisation_id);`,
+			`CREATE INDEX IF NOT EXISTS software_release_sboms_release_idx ON software_release_sboms(organisation_id, release_id);`,
 			`CREATE INDEX IF NOT EXISTS ota_deployments_organisation_status_idx ON ota_deployments(organisation_id, status);`,
 			`CREATE INDEX IF NOT EXISTS ota_deployments_status_idx ON ota_deployments(status);`,
+			`CREATE INDEX IF NOT EXISTS cve_scan_runs_release_created_idx ON cve_scan_runs(organisation_id, release_id, created_at DESC, id DESC);`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS cve_scan_runs_one_active_idx ON cve_scan_runs(organisation_id, release_id) WHERE status IN ('pending', 'running');`,
+			`CREATE INDEX IF NOT EXISTS cve_scan_findings_run_idx ON cve_scan_findings(scan_run_id);`,
+			`CREATE INDEX IF NOT EXISTS cve_scan_findings_release_cve_idx ON cve_scan_findings(organisation_id, release_id, cve_id);`,
+			`CREATE INDEX IF NOT EXISTS release_cve_waivers_release_idx ON release_cve_waivers(organisation_id, release_id);`,
 			`CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);`,
 			`CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);`,
 		}, nil

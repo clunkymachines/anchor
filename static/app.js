@@ -99,18 +99,67 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("DOMContentLoaded", () => {
   const deviceEvents = document.querySelector("[data-device-events-url]");
-  if (!deviceEvents || !window.EventSource) {
+  const releaseEvents = document.querySelector("[data-release-events-url]");
+  if (!window.EventSource) {
     return;
   }
 
-  const deviceEventStream = new EventSource(deviceEvents.dataset.deviceEventsUrl);
-  deviceEventStream.addEventListener("device-telemetry", () => {
-    document.body.dispatchEvent(new Event("device-telemetry-refresh", { bubbles: true }));
-  });
-  deviceEventStream.addEventListener("device-tasks", () => {
-    document.body.dispatchEvent(new Event("device-tasks-refresh", { bubbles: true }));
-  });
+  let releaseRefreshInFlight = false;
+  let releaseRefreshQueued = false;
+  const refreshReleaseCVEState = async () => {
+    const releaseState = document.querySelector("[data-release-cves-url]");
+    if (!releaseState) {
+      return;
+    }
+    if (releaseRefreshInFlight) {
+      releaseRefreshQueued = true;
+      return;
+    }
+
+    releaseRefreshInFlight = true;
+    try {
+      const response = await fetch(releaseState.dataset.releaseCvesUrl, {
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "fetch" },
+      });
+      if (!response.ok) {
+        return;
+      }
+      releaseState.outerHTML = await response.text();
+      window.htmx?.process(document.body);
+    } finally {
+      releaseRefreshInFlight = false;
+      if (releaseRefreshQueued) {
+        releaseRefreshQueued = false;
+        refreshReleaseCVEState();
+      }
+    }
+  };
+
+  let deviceEventStream = null;
+  if (deviceEvents) {
+    deviceEventStream = new EventSource(deviceEvents.dataset.deviceEventsUrl);
+    deviceEventStream.addEventListener("device-telemetry", () => {
+      document.body.dispatchEvent(new Event("device-telemetry-refresh", { bubbles: true }));
+    });
+    deviceEventStream.addEventListener("device-tasks", () => {
+      document.body.dispatchEvent(new Event("device-tasks-refresh", { bubbles: true }));
+    });
+  }
+
+  let releaseEventStream = null;
+  if (releaseEvents) {
+    releaseEventStream = new EventSource(releaseEvents.dataset.releaseEventsUrl);
+    releaseEventStream.addEventListener("open", () => {
+      refreshReleaseCVEState();
+    });
+    releaseEventStream.addEventListener("release-cves", () => {
+      refreshReleaseCVEState();
+    });
+  }
+
   window.addEventListener("beforeunload", () => {
-    deviceEventStream.close();
+    deviceEventStream?.close();
+    releaseEventStream?.close();
   });
 });

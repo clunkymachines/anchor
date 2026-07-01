@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"anchor/internal/cve"
 	"anchor/internal/db"
 	"anchor/internal/domain"
 
@@ -23,10 +25,15 @@ import (
 )
 
 const (
-	sessionCookieName = "anchor_session"
-	sessionDuration   = 7 * 24 * time.Hour
-	defaultReleaseDir = "anchor-data/releases"
-	maxReleaseUpload  = 256 << 20
+	sessionCookieName        = "anchor_session"
+	sessionDuration          = 7 * 24 * time.Hour
+	defaultReleaseDir        = "anchor-data/releases"
+	maxFirmwareUpload        = 256 << 20
+	maxReleaseSBOMFiles      = 10
+	maxReleaseSBOMFileSize   = 25 << 20
+	maxReleaseSBOMTotalSize  = 100 << 20
+	maxReleaseUpload         = maxFirmwareUpload + maxReleaseSBOMTotalSize
+	releaseSBOMFormFieldName = "spdx_files"
 )
 
 type contextKey string
@@ -38,6 +45,7 @@ type Server struct {
 	templates              *template.Template
 	internalMQTTClientAuth InternalMQTTClientAuthConfig
 	taskPublisher          DeviceTaskPublisher
+	cveScanWorker          CVEScanWorker
 	releaseStorageDir      string
 	fotaDownloadBaseURL    string
 }
@@ -47,6 +55,9 @@ type ServerConfig struct {
 	TaskPublisher          DeviceTaskPublisher
 	ReleaseStorageDir      string
 	FOTADownloadBaseURL    string
+	CVEScanWorkerEnabled   bool
+	CVEScannerPath         string
+	CVEScanWorker          CVEScanWorker
 }
 
 // InternalMQTTClientAuthConfig authorizes Anchor's own MQTT broker client in MQTT auth callbacks.
@@ -58,6 +69,10 @@ type InternalMQTTClientAuthConfig struct {
 type DeviceTaskPublisher interface {
 	PublishDeviceTask(ctx context.Context, task domain.DeviceTask, organisationID int64) error
 	PublishPendingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) error
+}
+
+type CVEScanWorker interface {
+	Notify()
 }
 
 type loginPageData struct {
@@ -98,8 +113,22 @@ type deviceDetailPageData struct {
 
 type releasesPageData struct {
 	Shell            shellPageData
-	Releases         []domain.SoftwareRelease
+	Releases         []releaseView
+	DeviceModels     []deviceModelOptionView
 	ReleaseFormError string
+	ReleaseFormNote  string
+}
+
+type releaseDetailPageData struct {
+	Shell            shellPageData
+	Release          domain.SoftwareRelease
+	SBOM             releaseSBOMView
+	CVEStatus        cveStatusView
+	ActiveCVEs       []cveGroupView
+	WaivedCVEs       []cveGroupView
+	ScanRuns         []scanRunView
+	ReplaceFormError string
+	RescanFormError  string
 }
 
 type deviceModelsPageData struct {
@@ -138,6 +167,8 @@ type deviceView struct {
 	OrganisationID   int64
 	ModelName        string
 	SoftwareVersions string
+	FirmwareVersion  string
+	CVEStatus        cveStatusView
 	IsGateway        bool
 	Communication    []string
 	Status           string
@@ -151,6 +182,10 @@ type deviceDetailView struct {
 	DeviceModelID       int64
 	ModelName           string
 	SoftwareVersions    string
+	FirmwareVersion     string
+	CVEStatus           cveStatusView
+	MatchedReleaseLabel string
+	MatchedReleaseURL   string
 	IsGateway           bool
 	DataTopic           string
 	TaskTopic           string
@@ -199,11 +234,57 @@ type deviceTaskView struct {
 	CompletedAt string
 }
 
+type releaseView struct {
+	domain.SoftwareRelease
+	SBOMFileCount int
+}
+
+type releaseSBOMView struct {
+	Present        bool
+	FileCount      int
+	TotalSizeBytes int64
+	UpdatedAt      string
+}
+
+type cveStatusView struct {
+	Status       string
+	Label        string
+	StatusClass  string
+	ActiveCount  int
+	HighestLabel string
+	Warning      string
+}
+
+type cveGroupView struct {
+	CVEID         string
+	Severity      string
+	SeverityClass string
+	NVDURL        string
+	WaiverNote    string
+	Evidence      []cveEvidenceView
+}
+
+type cveEvidenceView struct {
+	PackageName      string
+	InstalledVersion string
+}
+
+type scanRunView struct {
+	ID           int64
+	Trigger      string
+	Status       string
+	StatusClass  string
+	ErrorMessage string
+	CreatedAt    string
+	StartedAt    string
+	FinishedAt   string
+}
+
 type releaseOptionView struct {
-	ID      int64
-	Name    string
-	Version string
-	Label   string
+	ID        int64
+	ModelName string
+	Version   string
+	Label     string
 }
 
 type deviceModelOptionView struct {
@@ -247,11 +328,22 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 		templates:              template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict}).ParseGlob("templates/*.html")),
 		internalMQTTClientAuth: config.InternalMQTTClientAuth,
 		taskPublisher:          config.TaskPublisher,
+		cveScanWorker:          config.CVEScanWorker,
 		releaseStorageDir:      config.ReleaseStorageDir,
 		fotaDownloadBaseURL:    strings.TrimRight(strings.TrimSpace(config.FOTADownloadBaseURL), "/"),
 	}
 	if server.releaseStorageDir == "" {
 		server.releaseStorageDir = defaultReleaseDir
+	}
+	if config.CVEScanWorkerEnabled && server.cveScanWorker == nil {
+		worker := cve.NewWorker(cve.Config{
+			Store:             store,
+			ScannerPath:       config.CVEScannerPath,
+			ReleaseStorageDir: server.releaseStorageDir,
+		})
+		if err := worker.Start(context.Background()); err == nil {
+			server.cveScanWorker = worker
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -275,6 +367,13 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /device-models", server.requireAuth(http.HandlerFunc(server.deviceModelsPost)))
 	mux.Handle("GET /releases", server.requireAuth(http.HandlerFunc(server.releases)))
 	mux.Handle("POST /releases", server.requireAuth(http.HandlerFunc(server.releasesPost)))
+	mux.Handle("GET /releases/{releaseID}", server.requireAuth(http.HandlerFunc(server.releaseDetail)))
+	mux.Handle("GET /releases/{releaseID}/cves", server.requireAuth(http.HandlerFunc(server.releaseCVEState)))
+	mux.Handle("GET /releases/{releaseID}/events", server.requireAuth(http.HandlerFunc(server.releaseEvents)))
+	mux.Handle("POST /releases/{releaseID}/sbom", server.requireAuth(http.HandlerFunc(server.releaseSBOMReplacePost)))
+	mux.Handle("POST /releases/{releaseID}/rescan", server.requireAuth(http.HandlerFunc(server.releaseRescanPost)))
+	mux.Handle("POST /releases/{releaseID}/cves/{cveID}/waiver", server.requireAuth(http.HandlerFunc(server.releaseCVEMarkNotRelevantPost)))
+	mux.Handle("POST /releases/{releaseID}/cves/{cveID}/waiver/delete", server.requireAuth(http.HandlerFunc(server.releaseCVEUnmarkNotRelevantPost)))
 	mux.HandleFunc("GET /org/{organisationID}/releases/{releaseID}/binary", server.releaseBinary)
 	mux.Handle("GET /ota-updates", server.requireAuth(http.HandlerFunc(server.otaUpdates)))
 	mux.Handle("GET /organisations", server.requireAuth(http.HandlerFunc(server.organisations)))
@@ -405,11 +504,18 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		if connectivity.Connected {
 			onlineCount++
 		}
+		cveStatus, err := s.store.DeviceCVEImpactStatus(r.Context(), shell.SelectedOrganisationID, device.Device.ID)
+		if err != nil {
+			http.Error(w, "device cve status query error", http.StatusInternalServerError)
+			return
+		}
 		views = append(views, deviceView{
 			ID:               device.Device.ID,
 			OrganisationID:   device.Device.OrganisationID,
 			ModelName:        device.Device.ModelName,
 			SoftwareVersions: formatSoftwareVersions(device.Device.SoftwareVersions),
+			FirmwareVersion:  firmwareVersion(device.Device.SoftwareVersions),
+			CVEStatus:        cveStatusViewFor(cveStatus),
 			IsGateway:        device.Device.IsGateway,
 			Communication:    communication,
 			Status:           connectivity.Status,
@@ -932,16 +1038,28 @@ func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	shell.SelectedOrganisationID = organisationID
 
-	releases, err := s.store.ListSoftwareReleases(r.Context(), organisationID)
+	releases, err := s.releaseViews(r.Context(), organisationID)
 	if err != nil {
 		http.Error(w, "release query error", http.StatusInternalServerError)
 		return
 	}
+	models, err := s.deviceModelOptions(r.Context(), organisationID)
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
 
+	note := ""
+	if len(models) == 0 {
+		note = "Create a device model before creating releases."
+	}
 	s.renderReleases(w, releasesPageData{
-		Shell:    shell,
-		Releases: releases,
+		Shell:           shell,
+		Releases:        releases,
+		DeviceModels:    models,
+		ReleaseFormNote: note,
 	})
 }
 
@@ -952,10 +1070,9 @@ func (s *Server) releasesPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := strings.TrimSpace(r.FormValue("name"))
 	version := strings.TrimSpace(r.FormValue("version"))
-	if name == "" || version == "" {
-		s.renderReleasesWithError(w, r, "Software name and version are required.")
+	if version == "" {
+		s.renderReleasesWithError(w, r, "Firmware version is required.")
 		return
 	}
 
@@ -968,22 +1085,41 @@ func (s *Server) releasesPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing organisation id", http.StatusBadRequest)
 		return
 	}
+	deviceModelID, err := strconv.ParseInt(r.FormValue("device_model_id"), 10, 64)
+	if err != nil || deviceModelID <= 0 {
+		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, "Choose a device model.")
+		return
+	}
+	if _, err := s.store.DeviceModel(r.Context(), deviceModelID, organisationID); errors.Is(err, db.ErrNotFound) {
+		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, "Choose a device model from this organisation.")
+		return
+	} else if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
 
 	artifact, cleanup, err := s.saveReleaseArtifact(r, organisationID)
 	if err != nil {
 		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, err.Error())
 		return
 	}
+	sbom, sbomCleanup, err := s.saveReleaseSBOMFiles(r, artifact.Path)
+	if err != nil {
+		cleanup()
+		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, err.Error())
+		return
+	}
 	committed := false
 	defer func() {
 		if !committed {
+			sbomCleanup()
 			cleanup()
 		}
 	}()
 
-	_, err = s.store.CreateSoftwareRelease(r.Context(), domain.SoftwareRelease{
+	releaseID, err := s.store.CreateSoftwareRelease(r.Context(), domain.SoftwareRelease{
 		OrganisationID:      organisationID,
-		Name:                name,
+		DeviceModelID:       deviceModelID,
 		Version:             version,
 		ArtifactPath:        artifact.Path,
 		ArtifactFilename:    artifact.Filename,
@@ -991,12 +1127,253 @@ func (s *Server) releasesPost(w http.ResponseWriter, r *http.Request) {
 		ArtifactSizeBytes:   artifact.SizeBytes,
 	})
 	if err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, "A release already exists for this device model and version.")
+			return
+		}
 		http.Error(w, "release create error", http.StatusInternalServerError)
 		return
+	}
+	if sbom.Count > 0 {
+		if _, err := s.store.ReplaceReleaseSBOM(r.Context(), organisationID, releaseID, sbom.Count, sbom.SizeBytes); err != nil {
+			_ = s.store.DeleteSoftwareRelease(r.Context(), releaseID, organisationID)
+			http.Error(w, "release sbom create error", http.StatusInternalServerError)
+			return
+		}
+		if _, err := s.store.EnqueueCVEScan(r.Context(), organisationID, releaseID, "auto"); err != nil && !errors.Is(err, db.ErrConflict) {
+			_ = s.store.DeleteSoftwareRelease(r.Context(), releaseID, organisationID)
+			http.Error(w, "release scan enqueue error", http.StatusInternalServerError)
+			return
+		}
+		if s.cveScanWorker != nil {
+			s.cveScanWorker.Notify()
+		}
 	}
 	committed = true
 
 	http.Redirect(w, r, "/releases?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) releaseDetail(w http.ResponseWriter, r *http.Request) {
+	shell, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.URL.Query().Get("organisation_id"))
+	if !ok {
+		return
+	}
+	data, err := s.loadReleaseDetailPageData(r.Context(), shell, releaseID, organisationID, "", "")
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "release detail query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderReleaseDetail(w, data)
+}
+
+func (s *Server) releaseCVEState(w http.ResponseWriter, r *http.Request) {
+	shell, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.URL.Query().Get("organisation_id"))
+	if !ok {
+		return
+	}
+	data, err := s.loadReleaseDetailPageData(r.Context(), shell, releaseID, organisationID, "", "")
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "release detail query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderReleaseCVEState(w, data)
+}
+
+func (s *Server) releaseEvents(w http.ResponseWriter, r *http.Request) {
+	_, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.URL.Query().Get("organisation_id"))
+	if !ok {
+		return
+	}
+	if _, err := s.store.SoftwareRelease(r.Context(), releaseID, organisationID); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "release query error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	scans, unsubscribe := s.store.SubscribeReleaseCVEScans(r.Context(), organisationID, releaseID)
+	defer unsubscribe()
+
+	_, _ = w.Write([]byte(": connected\n\n"))
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-scans:
+			_, _ = w.Write([]byte("event: release-cves\n"))
+			_, _ = w.Write([]byte("data: refresh\n\n"))
+			flusher.Flush()
+		case <-heartbeat.C:
+			_, _ = w.Write([]byte(": heartbeat\n\n"))
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) releaseSBOMReplacePost(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxReleaseSBOMTotalSize+(1<<20))
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		s.renderReleaseDetailMutationError(w, r, "Replacement SBOM upload is invalid or too large.", "")
+		return
+	}
+	shell, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.FormValue("organisation_id"))
+	if !ok {
+		return
+	}
+	release, err := s.store.SoftwareRelease(r.Context(), releaseID, organisationID)
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "release query error", http.StatusInternalServerError)
+		return
+	}
+
+	sbom, err := s.replaceReleaseSBOMFiles(r, release.ArtifactPath)
+	if err != nil {
+		s.renderReleaseDetailForOrganisationWithError(w, r, shell, releaseID, organisationID, err.Error(), "")
+		return
+	}
+	if _, err := s.store.ReplaceReleaseSBOM(r.Context(), organisationID, releaseID, sbom.Count, sbom.SizeBytes); err != nil {
+		http.Error(w, "release sbom replace error", http.StatusInternalServerError)
+		return
+	}
+	if _, err := s.store.EnqueueCVEScan(r.Context(), organisationID, releaseID, "auto"); err != nil && !errors.Is(err, db.ErrConflict) {
+		http.Error(w, "release scan enqueue error", http.StatusInternalServerError)
+		return
+	}
+	if s.cveScanWorker != nil {
+		s.cveScanWorker.Notify()
+	}
+	http.Redirect(w, r, releaseDetailURL(releaseID, organisationID), http.StatusSeeOther)
+}
+
+func (s *Server) releaseRescanPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.renderReleaseDetailMutationError(w, r, "", "Rescan request is invalid.")
+		return
+	}
+	shell, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.FormValue("organisation_id"))
+	if !ok {
+		return
+	}
+	if _, err := s.store.SoftwareRelease(r.Context(), releaseID, organisationID); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "release query error", http.StatusInternalServerError)
+		return
+	}
+	if _, err := s.store.EnqueueCVEScan(r.Context(), organisationID, releaseID, "manual"); errors.Is(err, db.ErrConflict) {
+		s.renderReleaseDetailForOrganisationWithError(w, r, shell, releaseID, organisationID, "", "A scan is already pending or running.")
+		return
+	} else if errors.Is(err, db.ErrNotFound) {
+		s.renderReleaseDetailForOrganisationWithError(w, r, shell, releaseID, organisationID, "", "Upload an SBOM before scanning.")
+		return
+	} else if err != nil {
+		http.Error(w, "release scan enqueue error", http.StatusInternalServerError)
+		return
+	}
+	if s.cveScanWorker != nil {
+		s.cveScanWorker.Notify()
+	}
+	http.Redirect(w, r, releaseDetailURL(releaseID, organisationID), http.StatusSeeOther)
+}
+
+func (s *Server) releaseCVEMarkNotRelevantPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "waiver request is invalid", http.StatusBadRequest)
+		return
+	}
+	shell, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.FormValue("organisation_id"))
+	if !ok {
+		return
+	}
+	cveID := strings.TrimSpace(r.PathValue("cveID"))
+	if cveID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.UpsertReleaseCVEWaiver(r.Context(), domain.ReleaseCVEWaiver{
+		OrganisationID: organisationID,
+		ReleaseID:      releaseID,
+		CVEID:          cveID,
+		Note:           r.FormValue("note"),
+		UserID:         shell.User.ID,
+	}); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "release cve waiver error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, releaseDetailURL(releaseID, organisationID), http.StatusSeeOther)
+}
+
+func (s *Server) releaseCVEUnmarkNotRelevantPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "waiver request is invalid", http.StatusBadRequest)
+		return
+	}
+	_, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.FormValue("organisation_id"))
+	if !ok {
+		return
+	}
+	cveID := strings.TrimSpace(r.PathValue("cveID"))
+	if cveID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.store.DeleteReleaseCVEWaiver(r.Context(), organisationID, releaseID, cveID); err != nil {
+		http.Error(w, "release cve waiver delete error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, releaseDetailURL(releaseID, organisationID), http.StatusSeeOther)
+}
+
+func (s *Server) releaseMutationTarget(w http.ResponseWriter, r *http.Request, organisationValue string) (shellPageData, int64, int64, bool) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return shellPageData{}, 0, 0, false
+	}
+	releaseID, err := strconv.ParseInt(r.PathValue("releaseID"), 10, 64)
+	if err != nil || releaseID <= 0 {
+		http.NotFound(w, r)
+		return shellPageData{}, 0, 0, false
+	}
+	organisationID, ok := requestedOrganisationID(organisationValue, shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return shellPageData{}, 0, 0, false
+	}
+	shell.SelectedOrganisationID = organisationID
+	return shell, releaseID, organisationID, true
 }
 
 func (s *Server) releaseBinary(w http.ResponseWriter, r *http.Request) {
@@ -1055,6 +1432,12 @@ type releaseArtifactUpload struct {
 	SizeBytes   int64
 }
 
+type releaseSBOMUpload struct {
+	RelativeDir string
+	Count       int
+	SizeBytes   int64
+}
+
 func (s *Server) saveReleaseArtifact(r *http.Request, organisationID int64) (releaseArtifactUpload, func(), error) {
 	file, header, err := r.FormFile("artifact")
 	if err != nil {
@@ -1109,6 +1492,235 @@ func (s *Server) saveReleaseArtifact(r *http.Request, organisationID int64) (rel
 		}, func() {
 			_ = os.Remove(fullPath)
 		}, nil
+}
+
+func (s *Server) saveReleaseSBOMFiles(r *http.Request, artifactPath string) (releaseSBOMUpload, func(), error) {
+	noopCleanup := func() {}
+	selected, totalSize, err := selectedReleaseSBOMFiles(r)
+	if err != nil {
+		return releaseSBOMUpload{}, noopCleanup, err
+	}
+	if len(selected) == 0 {
+		return releaseSBOMUpload{}, noopCleanup, nil
+	}
+
+	relativeDir := releaseSBOMRelativeDir(artifactPath)
+	cleanup, err := s.writeSelectedReleaseSBOMFiles(selected, relativeDir)
+	if err != nil {
+		return releaseSBOMUpload{}, noopCleanup, err
+	}
+	return releaseSBOMUpload{
+		RelativeDir: relativeDir,
+		Count:       len(selected),
+		SizeBytes:   totalSize,
+	}, cleanup, nil
+}
+
+func (s *Server) replaceReleaseSBOMFiles(r *http.Request, artifactPath string) (releaseSBOMUpload, error) {
+	selected, totalSize, err := selectedReleaseSBOMFiles(r)
+	if err != nil {
+		return releaseSBOMUpload{}, err
+	}
+	if len(selected) == 0 {
+		return releaseSBOMUpload{}, errors.New("Replacement SBOM requires at least one .spdx file.")
+	}
+
+	token, err := randomToken()
+	if err != nil {
+		return releaseSBOMUpload{}, fmt.Errorf("prepare SBOM storage: %w", err)
+	}
+	relativeDir := releaseSBOMRelativeDir(artifactPath)
+	stagedRelativeDir := relativeDir + ".upload-" + token
+	stagedCleanup, err := s.writeSelectedReleaseSBOMFiles(selected, stagedRelativeDir)
+	if err != nil {
+		return releaseSBOMUpload{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			stagedCleanup()
+		}
+	}()
+
+	fullDir, ok := s.releaseArtifactFullPath(relativeDir)
+	if !ok {
+		return releaseSBOMUpload{}, errors.New("SBOM storage path is invalid.")
+	}
+	stagedFullDir, ok := s.releaseArtifactFullPath(stagedRelativeDir)
+	if !ok {
+		return releaseSBOMUpload{}, errors.New("SBOM storage path is invalid.")
+	}
+	if err := os.RemoveAll(fullDir); err != nil {
+		return releaseSBOMUpload{}, fmt.Errorf("replace SBOM storage: %w", err)
+	}
+	if err := os.Rename(stagedFullDir, fullDir); err != nil {
+		return releaseSBOMUpload{}, fmt.Errorf("replace SBOM storage: %w", err)
+	}
+	committed = true
+
+	return releaseSBOMUpload{
+		RelativeDir: relativeDir,
+		Count:       len(selected),
+		SizeBytes:   totalSize,
+	}, nil
+}
+
+func selectedReleaseSBOMFiles(r *http.Request) ([]*multipartFileHeader, int64, error) {
+	if r.MultipartForm == nil {
+		return nil, 0, nil
+	}
+
+	headers := r.MultipartForm.File[releaseSBOMFormFieldName]
+	selected := make([]*multipartFileHeader, 0, len(headers))
+	seenFilenames := make(map[string]struct{})
+	var totalSize int64
+	for _, header := range headers {
+		if strings.TrimSpace(header.Filename) == "" {
+			continue
+		}
+		filename := cleanUploadFilename(header.Filename)
+		if !strings.EqualFold(filepath.Ext(filename), ".spdx") {
+			return nil, 0, errors.New("SBOM files must use the .spdx extension.")
+		}
+		if header.Size <= 0 {
+			return nil, 0, errors.New("SBOM files must not be empty.")
+		}
+		if header.Size > maxReleaseSBOMFileSize {
+			return nil, 0, fmt.Errorf("Each SBOM file must be %d MB or smaller.", maxReleaseSBOMFileSize>>20)
+		}
+		totalSize += header.Size
+		if totalSize > maxReleaseSBOMTotalSize {
+			return nil, 0, fmt.Errorf("SBOM uploads must be %d MB total or smaller.", maxReleaseSBOMTotalSize>>20)
+		}
+		if _, ok := seenFilenames[filename]; ok {
+			return nil, 0, errors.New("SBOM filenames must be unique after cleanup.")
+		}
+		file, err := header.Open()
+		if err != nil {
+			return nil, 0, fmt.Errorf("read SBOM file: %w", err)
+		}
+		shapeErr := validateSPDXShape(file)
+		closeErr := file.Close()
+		if shapeErr != nil {
+			return nil, 0, shapeErr
+		}
+		if closeErr != nil {
+			return nil, 0, fmt.Errorf("read SBOM file: %w", closeErr)
+		}
+		seenFilenames[filename] = struct{}{}
+		selected = append(selected, &multipartFileHeader{
+			header:   header,
+			filename: filename,
+		})
+	}
+	if len(selected) > maxReleaseSBOMFiles {
+		return nil, 0, fmt.Errorf("A release can include up to %d SBOM files.", maxReleaseSBOMFiles)
+	}
+	return selected, totalSize, nil
+}
+
+func (s *Server) writeSelectedReleaseSBOMFiles(selected []*multipartFileHeader, relativeDir string) (func(), error) {
+	fullDir, ok := s.releaseArtifactFullPath(relativeDir)
+	if !ok {
+		return nil, errors.New("SBOM storage path is invalid.")
+	}
+	if err := os.MkdirAll(fullDir, 0o755); err != nil {
+		return nil, fmt.Errorf("prepare SBOM storage: %w", err)
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(fullDir)
+	}
+
+	for _, selectedFile := range selected {
+		file, err := selectedFile.header.Open()
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("read SBOM file: %w", err)
+		}
+
+		fullPath := filepath.Join(fullDir, selectedFile.filename)
+		destination, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			_ = file.Close()
+			cleanup()
+			return nil, fmt.Errorf("create SBOM file: %w", err)
+		}
+		written, copyErr := io.Copy(destination, io.LimitReader(file, maxReleaseSBOMFileSize+1))
+		closeDestinationErr := destination.Close()
+		closeSourceErr := file.Close()
+		if copyErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("save SBOM file: %w", copyErr)
+		}
+		if closeDestinationErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("save SBOM file: %w", closeDestinationErr)
+		}
+		if closeSourceErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("read SBOM file: %w", closeSourceErr)
+		}
+		if written == 0 {
+			cleanup()
+			return nil, errors.New("SBOM files must not be empty.")
+		}
+		if written > maxReleaseSBOMFileSize {
+			cleanup()
+			return nil, fmt.Errorf("Each SBOM file must be %d MB or smaller.", maxReleaseSBOMFileSize>>20)
+		}
+	}
+	return cleanup, nil
+}
+
+type multipartFileHeader struct {
+	header   *multipart.FileHeader
+	filename string
+}
+
+func validateSPDXShape(file multipart.File) error {
+	probe := make([]byte, 64<<10)
+	n, err := file.Read(probe)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("read SBOM file: %w", err)
+	}
+	content := strings.TrimSpace(strings.TrimPrefix(string(probe[:n]), "\ufeff"))
+	if content == "" {
+		return errors.New("SBOM files must not be empty.")
+	}
+	if strings.HasPrefix(content, "SPDXVersion:") {
+		return nil
+	}
+	if strings.HasPrefix(content, "{") && strings.Contains(content, "spdxVersion") {
+		return nil
+	}
+	return errors.New("SBOM files must look like SPDX tag-value or SPDX JSON documents.")
+}
+
+func releaseSBOMRelativeDir(artifactPath string) string {
+	return artifactPath + ".sbom"
+}
+
+func (s *Server) releaseViews(ctx context.Context, organisationID int64) ([]releaseView, error) {
+	releases, err := s.store.ListSoftwareReleases(ctx, organisationID)
+	if err != nil {
+		return nil, err
+	}
+
+	views := make([]releaseView, 0, len(releases))
+	for _, release := range releases {
+		sbom, err := s.store.CurrentReleaseSBOM(ctx, organisationID, release.ID)
+		if errors.Is(err, db.ErrNotFound) {
+			err = nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, releaseView{
+			SoftwareRelease: release,
+			SBOMFileCount:   sbom.FileCount,
+		})
+	}
+	return views, nil
 }
 
 func (s *Server) releaseArtifactFullPath(relativePath string) (string, bool) {
@@ -1515,17 +2127,50 @@ func (s *Server) renderReleasesWithError(w http.ResponseWriter, r *http.Request,
 	s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, message)
 }
 
+func (s *Server) renderReleaseDetailMutationError(w http.ResponseWriter, r *http.Request, replaceError string, rescanError string) {
+	shell, releaseID, organisationID, ok := s.releaseMutationTarget(w, r, r.FormValue("organisation_id"))
+	if !ok {
+		return
+	}
+	s.renderReleaseDetailForOrganisationWithError(w, r, shell, releaseID, organisationID, replaceError, rescanError)
+}
+
+func (s *Server) renderReleaseDetailForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, releaseID int64, organisationID int64, replaceError string, rescanError string) {
+	data, err := s.loadReleaseDetailPageData(r.Context(), shell, releaseID, organisationID, replaceError, rescanError)
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "release detail query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderReleaseDetail(w, data)
+}
+
 func (s *Server) renderReleasesForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, message string) {
-	releases, err := s.store.ListSoftwareReleases(r.Context(), organisationID)
+	shell.SelectedOrganisationID = organisationID
+	releases, err := s.releaseViews(r.Context(), organisationID)
 	if err != nil {
 		http.Error(w, "release query error", http.StatusInternalServerError)
 		return
 	}
+	models, err := s.deviceModelOptions(r.Context(), organisationID)
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
 
+	note := ""
+	if len(models) == 0 {
+		note = "Create a device model before creating releases."
+	}
 	s.renderReleases(w, releasesPageData{
 		Shell:            shell,
 		Releases:         releases,
+		DeviceModels:     models,
 		ReleaseFormError: message,
+		ReleaseFormNote:  note,
 	})
 }
 
@@ -1576,6 +2221,20 @@ func (s *Server) renderDeviceTasks(w http.ResponseWriter, data deviceDetailPageD
 func (s *Server) renderReleases(w http.ResponseWriter, data releasesPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "releases.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderReleaseDetail(w http.ResponseWriter, data releaseDetailPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "release_detail.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderReleaseCVEState(w http.ResponseWriter, data releaseDetailPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "release_cve_state", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
@@ -1716,13 +2375,9 @@ func requestedOrganisationID(value string, organisations []domain.Organisation) 
 
 func (s *Server) loadDeviceCreatePageData(ctx context.Context, shell shellPageData, organisationID int64, formError string) (deviceCreatePageData, error) {
 	shell.SelectedOrganisationID = organisationID
-	models, err := s.store.ListDeviceModels(ctx, organisationID)
+	modelOptions, err := s.deviceModelOptions(ctx, organisationID)
 	if err != nil {
 		return deviceCreatePageData{}, err
-	}
-	modelOptions := make([]deviceModelOptionView, 0, len(models))
-	for _, model := range models {
-		modelOptions = append(modelOptions, deviceModelOption(model))
 	}
 
 	note := ""
@@ -1735,6 +2390,18 @@ func (s *Server) loadDeviceCreatePageData(ctx context.Context, shell shellPageDa
 		MQTTFormError:  formError,
 		DeviceFormNote: note,
 	}, nil
+}
+
+func (s *Server) deviceModelOptions(ctx context.Context, organisationID int64) ([]deviceModelOptionView, error) {
+	models, err := s.store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	modelOptions := make([]deviceModelOptionView, 0, len(models))
+	for _, model := range models {
+		modelOptions = append(modelOptions, deviceModelOption(model))
+	}
+	return modelOptions, nil
 }
 
 func (s *Server) loadDeviceModelsPageData(ctx context.Context, shell shellPageData, organisationID int64, formError string) (deviceModelsPageData, error) {
@@ -1766,12 +2433,86 @@ func (s *Server) loadDeviceModelsPageData(ctx context.Context, shell shellPageDa
 	}, nil
 }
 
+func (s *Server) loadReleaseDetailPageData(ctx context.Context, shell shellPageData, releaseID int64, organisationID int64, replaceError string, rescanError string) (releaseDetailPageData, error) {
+	shell.SelectedOrganisationID = organisationID
+	release, err := s.store.SoftwareRelease(ctx, releaseID, organisationID)
+	if err != nil {
+		return releaseDetailPageData{}, err
+	}
+
+	var sbomView releaseSBOMView
+	sbom, err := s.store.CurrentReleaseSBOM(ctx, organisationID, releaseID)
+	if errors.Is(err, db.ErrNotFound) {
+		err = nil
+	} else if err == nil {
+		sbomView = releaseSBOMView{
+			Present:        true,
+			FileCount:      sbom.FileCount,
+			TotalSizeBytes: sbom.TotalSizeBytes,
+			UpdatedAt:      sbom.UpdatedAt,
+		}
+	}
+	if err != nil {
+		return releaseDetailPageData{}, err
+	}
+
+	status, err := s.store.ReleaseCVEImpactStatus(ctx, organisationID, releaseID)
+	if err != nil {
+		return releaseDetailPageData{}, err
+	}
+	scanRuns, err := s.store.ListCVEScanRuns(ctx, organisationID, releaseID)
+	if err != nil {
+		return releaseDetailPageData{}, err
+	}
+	currentFindings, err := s.store.ListCurrentCVEFindings(ctx, organisationID, releaseID)
+	if errors.Is(err, db.ErrNotFound) {
+		currentFindings = nil
+	} else if err != nil {
+		return releaseDetailPageData{}, err
+	}
+	waivers, err := s.store.ListReleaseCVEWaivers(ctx, organisationID, releaseID)
+	if err != nil {
+		return releaseDetailPageData{}, err
+	}
+
+	activeCVEs, waivedCVEs := groupedCVEFindings(currentFindings, waivers)
+	scanRunViews := make([]scanRunView, 0, len(scanRuns))
+	for _, run := range scanRuns {
+		scanRunViews = append(scanRunViews, scanRunView{
+			ID:           run.ID,
+			Trigger:      run.Trigger,
+			Status:       cveScanRunStatusLabel(run.Status),
+			StatusClass:  cveScanRunStatusClass(run.Status),
+			ErrorMessage: run.ErrorMessage,
+			CreatedAt:    run.CreatedAt,
+			StartedAt:    run.StartedAt,
+			FinishedAt:   run.FinishedAt,
+		})
+	}
+
+	return releaseDetailPageData{
+		Shell:            shell,
+		Release:          release,
+		SBOM:             sbomView,
+		CVEStatus:        cveStatusViewFor(status),
+		ActiveCVEs:       activeCVEs,
+		WaivedCVEs:       waivedCVEs,
+		ScanRuns:         scanRunViews,
+		ReplaceFormError: replaceError,
+		RescanFormError:  rescanError,
+	}, nil
+}
+
 func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageData, deviceID string, organisationID int64, taskFormError string) (deviceDetailPageData, error) {
 	detail, err := s.store.DeviceDetail(ctx, deviceID, organisationID)
 	if err != nil {
 		return deviceDetailPageData{}, err
 	}
 	connectivity := deviceConnectivity(detail.Device, time.Now())
+	cveStatus, err := s.store.DeviceCVEImpactStatus(ctx, organisationID, deviceID)
+	if err != nil {
+		return deviceDetailPageData{}, err
+	}
 
 	data := deviceDetailPageData{
 		Shell: shell,
@@ -1781,6 +2522,8 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 			DeviceModelID:       detail.Device.DeviceModelID,
 			ModelName:           detail.Device.ModelName,
 			SoftwareVersions:    formatSoftwareVersions(detail.Device.SoftwareVersions),
+			FirmwareVersion:     firmwareVersion(detail.Device.SoftwareVersions),
+			CVEStatus:           cveStatusViewFor(cveStatus),
 			IsGateway:           detail.Device.IsGateway,
 			DataTopic:           mqttDataTopic(detail.Device.OrganisationID, detail.Device.ID),
 			TaskTopic:           mqttTaskTopic(detail.Device.OrganisationID, detail.Device.ID),
@@ -1790,6 +2533,14 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 			LastSeen:            connectivity.LastSeen,
 		},
 		TaskFormError: taskFormError,
+	}
+	if cveStatus.MatchedReleaseID > 0 {
+		release, err := s.store.SoftwareRelease(ctx, cveStatus.MatchedReleaseID, organisationID)
+		if err != nil {
+			return deviceDetailPageData{}, err
+		}
+		data.Device.MatchedReleaseLabel = strings.TrimSpace(release.DeviceModelName + " " + release.Version)
+		data.Device.MatchedReleaseURL = releaseDetailURL(release.ID, organisationID)
 	}
 	if detail.MQTTCredential != nil {
 		data.MQTTCredential = &mqttCredentialView{
@@ -1887,10 +2638,10 @@ func (s *Server) loadReleaseOptions(ctx context.Context, organisationID int64) (
 	options := make([]releaseOptionView, 0, len(releases))
 	for _, release := range releases {
 		options = append(options, releaseOptionView{
-			ID:      release.ID,
-			Name:    release.Name,
-			Version: release.Version,
-			Label:   release.Name + " " + release.Version,
+			ID:        release.ID,
+			ModelName: release.DeviceModelName,
+			Version:   release.Version,
+			Label:     strings.TrimSpace(release.DeviceModelName + " " + release.Version),
 		})
 	}
 	return options, nil
@@ -1910,10 +2661,214 @@ func expectedReleaseLabel(model domain.DeviceModel) string {
 	if model.ExpectedReleaseID == nil {
 		return ""
 	}
-	if model.ExpectedReleaseName == "" && model.ExpectedReleaseVersion == "" {
+	if model.ExpectedReleaseModelName == "" && model.ExpectedReleaseVersion == "" {
 		return strconv.FormatInt(*model.ExpectedReleaseID, 10)
 	}
-	return strings.TrimSpace(model.ExpectedReleaseName + " " + model.ExpectedReleaseVersion)
+	return strings.TrimSpace(model.ExpectedReleaseModelName + " " + model.ExpectedReleaseVersion)
+}
+
+func cveStatusViewFor(status domain.CVEImpactStatus) cveStatusView {
+	view := cveStatusView{
+		Status:       string(status.Status),
+		Label:        cveStatusLabel(status.Status),
+		StatusClass:  cveStatusClass(status.Status),
+		ActiveCount:  status.ActiveCVECount,
+		HighestLabel: cveSeverityDisplay(status.HighestActiveSeverity),
+	}
+	if status.HasLatestScanWarning {
+		view.Warning = status.LatestScanWarning
+	}
+	return view
+}
+
+func cveStatusLabel(status domain.CVEImpactStatusValue) string {
+	switch status {
+	case domain.CVEStatusNoSBOM:
+		return "No SBOM"
+	case domain.CVEStatusScanPending:
+		return "Scan pending"
+	case domain.CVEStatusNotScanned:
+		return "Not scanned"
+	case domain.CVEStatusImpacted:
+		return "Impacted"
+	case domain.CVEStatusNotImpacted:
+		return "Not impacted"
+	case domain.CVEStatusScanFailed:
+		return "Scan failed"
+	case domain.CVEStatusUnknownRelease:
+		return "Unknown release"
+	default:
+		return string(status)
+	}
+}
+
+func cveStatusClass(status domain.CVEImpactStatusValue) string {
+	switch status {
+	case domain.CVEStatusImpacted, domain.CVEStatusScanFailed:
+		return "status-danger"
+	case domain.CVEStatusScanPending:
+		return "status-warning"
+	case domain.CVEStatusNotImpacted:
+		return "status-success"
+	default:
+		return "status-neutral"
+	}
+}
+
+func cveScanRunStatusLabel(status string) string {
+	switch status {
+	case "pending":
+		return "Pending"
+	case "running":
+		return "Running"
+	case "success":
+		return "Success"
+	case "failed":
+		return "Failed"
+	default:
+		return status
+	}
+}
+
+func cveScanRunStatusClass(status string) string {
+	switch status {
+	case "pending", "running":
+		return "status-warning"
+	case "success":
+		return "status-success"
+	case "failed":
+		return "status-danger"
+	default:
+		return "status-neutral"
+	}
+}
+
+func groupedCVEFindings(findings []domain.CVEScanFinding, waivers []domain.ReleaseCVEWaiver) ([]cveGroupView, []cveGroupView) {
+	waiverNotes := make(map[string]string, len(waivers))
+	for _, waiver := range waivers {
+		waiverNotes[waiver.CVEID] = waiver.Note
+	}
+
+	activeGroups := make(map[string]*cveGroupView)
+	waivedGroups := make(map[string]*cveGroupView)
+	for _, finding := range findings {
+		cveID := strings.TrimSpace(finding.CVEID)
+		if cveID == "" {
+			continue
+		}
+		groups := activeGroups
+		if _, waived := waiverNotes[cveID]; waived {
+			groups = waivedGroups
+		}
+		group := groups[cveID]
+		if group == nil {
+			group = &cveGroupView{
+				CVEID:      cveID,
+				NVDURL:     cveDetailURL(cveID),
+				WaiverNote: waiverNotes[cveID],
+			}
+			groups[cveID] = group
+		}
+		group.Severity = higherCVESeverity(group.Severity, finding.Severity)
+		group.SeverityClass = cveSeverityClass(group.Severity)
+		group.Evidence = append(group.Evidence, cveEvidenceView{
+			PackageName:      finding.PackageName,
+			InstalledVersion: finding.InstalledVersion,
+		})
+	}
+	for _, waiver := range waivers {
+		if _, ok := waivedGroups[waiver.CVEID]; ok {
+			continue
+		}
+		waivedGroups[waiver.CVEID] = &cveGroupView{
+			CVEID:      waiver.CVEID,
+			NVDURL:     cveDetailURL(waiver.CVEID),
+			WaiverNote: waiver.Note,
+		}
+	}
+	return sortedCVEGroups(activeGroups), sortedCVEGroups(waivedGroups)
+}
+
+func sortedCVEGroups(groups map[string]*cveGroupView) []cveGroupView {
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]cveGroupView, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, *groups[key])
+	}
+	return result
+}
+
+func higherCVESeverity(current string, candidate string) string {
+	candidate = normalizedCVESeverity(candidate)
+	if candidate == "" {
+		return current
+	}
+	if current == "" || cveSeverityRank(candidate) > cveSeverityRank(current) {
+		return candidate
+	}
+	return current
+}
+
+func normalizedCVESeverity(severity string) string {
+	severity = strings.TrimSpace(strings.ToLower(severity))
+	switch severity {
+	case "critical", "high", "medium", "low", "negligible", "unknown":
+		return severity
+	case "":
+		return ""
+	default:
+		return "unknown"
+	}
+}
+
+func cveSeverityRank(severity string) int {
+	switch normalizedCVESeverity(severity) {
+	case "critical":
+		return 6
+	case "high":
+		return 5
+	case "medium":
+		return 4
+	case "low":
+		return 3
+	case "negligible":
+		return 2
+	case "unknown":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func cveSeverityDisplay(severity string) string {
+	severity = normalizedCVESeverity(severity)
+	if severity == "" {
+		return ""
+	}
+	return strings.ToUpper(severity[:1]) + severity[1:]
+}
+
+func cveSeverityClass(severity string) string {
+	switch normalizedCVESeverity(severity) {
+	case "critical", "high":
+		return "status-danger"
+	case "medium":
+		return "status-warning"
+	case "low", "negligible":
+		return "status-info"
+	case "unknown":
+		return "status-neutral"
+	default:
+		return "status-neutral"
+	}
+}
+
+func cveDetailURL(cveID string) string {
+	return "https://nvd.nist.gov/vuln/detail/" + strings.TrimSpace(cveID)
 }
 
 func (s *Server) findReleaseOption(ctx context.Context, organisationID int64, releaseID int64) (releaseOptionView, bool, error) {
@@ -1931,6 +2886,10 @@ func (s *Server) findReleaseOption(ctx context.Context, organisationID int64, re
 
 func releaseBinaryURLPath(releaseID int64, organisationID int64) string {
 	return "/org/" + strconv.FormatInt(organisationID, 10) + "/releases/" + strconv.FormatInt(releaseID, 10) + "/binary"
+}
+
+func releaseDetailURL(releaseID int64, organisationID int64) string {
+	return "/releases/" + strconv.FormatInt(releaseID, 10) + "?organisation_id=" + strconv.FormatInt(organisationID, 10)
 }
 
 func (s *Server) fotaDownloadURL(releaseID int64, organisationID int64) string {
@@ -2130,4 +3089,8 @@ func formatSoftwareVersions(versions domain.SoftwareVersions) string {
 		result += key + "=" + value
 	}
 	return result
+}
+
+func firmwareVersion(versions domain.SoftwareVersions) string {
+	return strings.TrimSpace(versions["firmware"])
 }

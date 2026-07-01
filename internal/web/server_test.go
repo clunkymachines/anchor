@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"errors"
 	"html/template"
 	"mime/multipart"
 	"net/http"
@@ -155,11 +156,12 @@ func TestDeviceTaskPostCreatesFOTATaskWithReleaseBinaryPath(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add user to organisation: %v", err)
 	}
+	deviceModelID := testDeviceModelID(t, store, organisationID, "Sensor")
 	if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
 		Device: domain.Device{
 			ID:               "device-001",
 			OrganisationID:   organisationID,
-			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
+			DeviceModelID:    deviceModelID,
 			ModelName:        "Sensor",
 			SoftwareVersions: domain.SoftwareVersions{},
 		},
@@ -174,7 +176,7 @@ func TestDeviceTaskPostCreatesFOTATaskWithReleaseBinaryPath(t *testing.T) {
 	}
 	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
 		OrganisationID:      organisationID,
-		Name:                "firmware",
+		DeviceModelID:       deviceModelID,
 		Version:             "1.2.3",
 		ArtifactPath:        "1/firmware.bin",
 		ArtifactFilename:    "firmware.bin",
@@ -252,9 +254,10 @@ func TestDeviceModelsPostCreatesModelWithExpectedRelease(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add user to organisation: %v", err)
 	}
+	releaseModelID := testDeviceModelID(t, store, organisationID, "Release target")
 	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
 		OrganisationID:      organisationID,
-		Name:                "firmware",
+		DeviceModelID:       releaseModelID,
 		Version:             "1.2.3",
 		ArtifactPath:        "1/firmware.bin",
 		ArtifactFilename:    "firmware.bin",
@@ -283,11 +286,18 @@ func TestDeviceModelsPostCreatesModelWithExpectedRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list device models: %v", err)
 	}
-	if len(models) != 1 || models[0].Name != "Gateway v1" || models[0].ExpectedHeartbeatSeconds != 120 || models[0].ExpectedProtocol != "mqtt" {
+	var createdModel *domain.DeviceModel
+	for i := range models {
+		if models[i].Name == "Gateway v1" {
+			createdModel = &models[i]
+			break
+		}
+	}
+	if createdModel == nil || createdModel.ExpectedHeartbeatSeconds != 120 || createdModel.ExpectedProtocol != "mqtt" {
 		t.Fatalf("unexpected device model: %#v", models)
 	}
-	if models[0].ExpectedReleaseID == nil || *models[0].ExpectedReleaseID != releaseID || models[0].ExpectedReleaseVersion != "1.2.3" {
-		t.Fatalf("unexpected expected release on model: %#v", models[0])
+	if createdModel.ExpectedReleaseID == nil || *createdModel.ExpectedReleaseID != releaseID || createdModel.ExpectedReleaseVersion != "1.2.3" {
+		t.Fatalf("unexpected expected release on model: %#v", createdModel)
 	}
 }
 
@@ -344,6 +354,132 @@ func TestDevicesPostCreatesDeviceWithSelectedModel(t *testing.T) {
 	}
 	if detail.Device.DeviceModelID != modelID || detail.Device.ModelName != "Sensor" {
 		t.Fatalf("unexpected device model link: %#v", detail.Device)
+	}
+}
+
+func TestDeviceCVEStatusShownOnListAndDetail(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{
+		Email:        "member@example.com",
+		Name:         "Member",
+		PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
+		UserID:         userID,
+		OrganisationID: organisationID,
+	}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	modelID := testDeviceModelID(t, store, organisationID, "Sensor")
+	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       modelID,
+		Version:             "1.2.3",
+		ArtifactPath:        "1/firmware.bin",
+		ArtifactFilename:    "firmware.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	if _, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseID, 1, 64); err != nil {
+		t.Fatalf("replace sbom: %v", err)
+	}
+	run, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "auto")
+	if err != nil {
+		t.Fatalf("enqueue scan: %v", err)
+	}
+	if err := store.CompleteCVEScanRun(ctx, organisationID, run.ID, "2026-06-29T10:01:00Z", []domain.CVEScanFinding{
+		{CVEID: "CVE-2026-0001", Severity: "high", PackageName: "lib-a", InstalledVersion: "1.0.0"},
+	}); err != nil {
+		t.Fatalf("complete scan: %v", err)
+	}
+	for _, device := range []domain.Device{
+		{
+			ID:               "device-impacted",
+			OrganisationID:   organisationID,
+			DeviceModelID:    modelID,
+			SoftwareVersions: domain.SoftwareVersions{"firmware": "1.2.3"},
+		},
+		{
+			ID:               "device-unknown",
+			OrganisationID:   organisationID,
+			DeviceModelID:    modelID,
+			SoftwareVersions: domain.SoftwareVersions{"firmware": "9.9.9"},
+		},
+	} {
+		if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+			Device: device,
+			Credential: domain.DeviceMQTTCredential{
+				DeviceID:     device.ID,
+				Username:     device.ID,
+				PasswordHash: "hash",
+				Enabled:      true,
+			},
+		}); err != nil {
+			t.Fatalf("save device %s: %v", device.ID, err)
+		}
+	}
+
+	server := testServerWithTemplates(t, store)
+	user := domain.User{ID: userID, Email: "member@example.com"}
+	listReq := httptest.NewRequest(http.MethodGet, "/devices?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), userContextKey, user))
+	listRes := httptest.NewRecorder()
+	server.devices(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected devices page, got %d body=%q", listRes.Code, listRes.Body.String())
+	}
+	listBody := listRes.Body.String()
+	for _, expected := range []string{"CVE", "Impacted", "High", "Unknown release"} {
+		if !strings.Contains(listBody, expected) {
+			t.Fatalf("expected devices page to contain %q, got %q", expected, listBody)
+		}
+	}
+	if strings.Contains(listBody, "CVE-2026-0001") || strings.Contains(listBody, "lib-a") {
+		t.Fatalf("expected device list not to expose raw scanner findings, got %q", listBody)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/devices/device-impacted?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	detailReq.SetPathValue("deviceID", "device-impacted")
+	detailReq = detailReq.WithContext(context.WithValue(detailReq.Context(), userContextKey, user))
+	detailRes := httptest.NewRecorder()
+	server.deviceDetail(detailRes, detailReq)
+	if detailRes.Code != http.StatusOK {
+		t.Fatalf("expected device detail, got %d body=%q", detailRes.Code, detailRes.Body.String())
+	}
+	detailBody := detailRes.Body.String()
+	for _, expected := range []string{
+		"Firmware",
+		"1.2.3",
+		"Impacted",
+		"High",
+		"Active CVEs",
+		`href="/releases/` + strconv.FormatInt(releaseID, 10) + `?organisation_id=` + strconv.FormatInt(organisationID, 10) + `"`,
+		"Sensor 1.2.3",
+	} {
+		if !strings.Contains(detailBody, expected) {
+			t.Fatalf("expected device detail to contain %q, got %q", expected, detailBody)
+		}
 	}
 }
 
@@ -731,8 +867,9 @@ func TestReleaseUploadStoresArtifactAndServesBinary(t *testing.T) {
 	if err := writer.WriteField("organisation_id", strconv.FormatInt(organisationID, 10)); err != nil {
 		t.Fatalf("write org field: %v", err)
 	}
-	if err := writer.WriteField("name", "firmware"); err != nil {
-		t.Fatalf("write name field: %v", err)
+	deviceModelID := testDeviceModelID(t, store, organisationID, "Gateway")
+	if err := writer.WriteField("device_model_id", strconv.FormatInt(deviceModelID, 10)); err != nil {
+		t.Fatalf("write device model field: %v", err)
 	}
 	if err := writer.WriteField("version", "1.2.3"); err != nil {
 		t.Fatalf("write version field: %v", err)
@@ -771,8 +908,18 @@ func TestReleaseUploadStoresArtifactAndServesBinary(t *testing.T) {
 	if release.ID <= 0 {
 		t.Fatalf("expected release id to be populated, got %#v", release)
 	}
+	if release.DeviceModelID != deviceModelID || release.DeviceModelName != "Gateway" {
+		t.Fatalf("unexpected release model metadata: %#v", release)
+	}
 	if release.ArtifactFilename != "firmware.bin" || release.ArtifactSizeBytes != int64(len("firmware-bytes")) {
 		t.Fatalf("unexpected artifact metadata: %#v", release)
+	}
+	scanRuns, err := store.ListCVEScanRuns(ctx, organisationID, release.ID)
+	if err != nil {
+		t.Fatalf("list cve scan runs: %v", err)
+	}
+	if len(scanRuns) != 0 {
+		t.Fatalf("expected firmware-only release not to enqueue a scan, got %#v", scanRuns)
 	}
 	artifactPath, ok := server.releaseArtifactFullPath(release.ArtifactPath)
 	if !ok {
@@ -794,6 +941,410 @@ func TestReleaseUploadStoresArtifactAndServesBinary(t *testing.T) {
 		t.Fatalf("unexpected release binary body %q", got)
 	}
 
+}
+
+func TestReleaseUploadStoresSPDXFilesAndShowsAggregateCount(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{
+		Email:        "member@example.com",
+		Name:         "Member",
+		PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
+		UserID:         userID,
+		OrganisationID: organisationID,
+	}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	deviceModelID := testDeviceModelID(t, store, organisationID, "Gateway")
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("organisation_id", strconv.FormatInt(organisationID, 10)); err != nil {
+		t.Fatalf("write org field: %v", err)
+	}
+	if err := writer.WriteField("device_model_id", strconv.FormatInt(deviceModelID, 10)); err != nil {
+		t.Fatalf("write device model field: %v", err)
+	}
+	if err := writer.WriteField("version", "1.2.3"); err != nil {
+		t.Fatalf("write version field: %v", err)
+	}
+	artifactPart, err := writer.CreateFormFile("artifact", "firmware.bin")
+	if err != nil {
+		t.Fatalf("create artifact field: %v", err)
+	}
+	if _, err := artifactPart.Write([]byte("firmware-bytes")); err != nil {
+		t.Fatalf("write artifact field: %v", err)
+	}
+	appSPDX, err := writer.CreateFormFile("spdx_files", "app.spdx")
+	if err != nil {
+		t.Fatalf("create app spdx field: %v", err)
+	}
+	if _, err := appSPDX.Write([]byte("SPDXVersion: SPDX-2.3\nDataLicense: CC0-1.0\nSPDXID: SPDXRef-DOCUMENT\n")); err != nil {
+		t.Fatalf("write app spdx field: %v", err)
+	}
+	buildSPDX, err := writer.CreateFormFile("spdx_files", "build.spdx")
+	if err != nil {
+		t.Fatalf("create build spdx field: %v", err)
+	}
+	if _, err := buildSPDX.Write([]byte(`{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT"}`)); err != nil {
+		t.Fatalf("write build spdx field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	storageDir := t.TempDir()
+	server := testServerWithTemplates(t, store)
+	server.releaseStorageDir = storageDir
+	user := domain.User{ID: userID, Email: "member@example.com"}
+	req := httptest.NewRequest(http.MethodPost, "/releases", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, user))
+	res := httptest.NewRecorder()
+	server.releasesPost(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after release upload, got %d body=%q", res.Code, res.Body.String())
+	}
+
+	releases, err := store.ListSoftwareReleases(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("list releases: %v", err)
+	}
+	if len(releases) != 1 {
+		t.Fatalf("expected one release, got %#v", releases)
+	}
+	sbomDir, ok := server.releaseArtifactFullPath(releaseSBOMRelativeDir(releases[0].ArtifactPath))
+	if !ok {
+		t.Fatalf("sbom path rejected for artifact %q", releases[0].ArtifactPath)
+	}
+	entries, err := os.ReadDir(sbomDir)
+	if err != nil {
+		t.Fatalf("read sbom dir: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected two sbom files, got %#v", entries)
+	}
+	sbom, err := store.CurrentReleaseSBOM(ctx, organisationID, releases[0].ID)
+	if err != nil {
+		t.Fatalf("current release sbom: %v", err)
+	}
+	if sbom.FileCount != 2 {
+		t.Fatalf("unexpected sbom metadata: %#v", sbom)
+	}
+	scanRuns, err := store.ListCVEScanRuns(ctx, organisationID, releases[0].ID)
+	if err != nil {
+		t.Fatalf("list cve scan runs: %v", err)
+	}
+	if len(scanRuns) != 1 || scanRuns[0].Status != "pending" || scanRuns[0].Trigger != "auto" {
+		t.Fatalf("expected auto-enqueued pending scan, got %#v", scanRuns)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/releases?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), userContextKey, user))
+	listRes := httptest.NewRecorder()
+	server.releases(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected releases page, got %d body=%q", listRes.Code, listRes.Body.String())
+	}
+	bodyText := listRes.Body.String()
+	if !strings.Contains(bodyText, "2 SPDX files") {
+		t.Fatalf("expected aggregate sbom count in release list, got %q", bodyText)
+	}
+	if strings.Contains(bodyText, "app.spdx") || strings.Contains(bodyText, "build.spdx") {
+		t.Fatalf("expected release list not to show individual SPDX filenames, got %q", bodyText)
+	}
+}
+
+func TestReleaseDetailShowsCVEsRescansAndReplacesSBOM(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{
+		Email:        "member@example.com",
+		Name:         "Member",
+		PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
+		UserID:         userID,
+		OrganisationID: organisationID,
+	}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	deviceModelID := testDeviceModelID(t, store, organisationID, "Gateway")
+	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       deviceModelID,
+		Version:             "1.2.3",
+		ArtifactPath:        "1/firmware.bin",
+		ArtifactFilename:    "firmware.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   14,
+	})
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	if _, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseID, 2, 128); err != nil {
+		t.Fatalf("replace sbom metadata: %v", err)
+	}
+	successRun, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "auto")
+	if err != nil {
+		t.Fatalf("enqueue scan: %v", err)
+	}
+	if err := store.StartCVEScanRun(ctx, organisationID, successRun.ID, "2026-06-29T10:00:00Z"); err != nil {
+		t.Fatalf("start scan: %v", err)
+	}
+	if err := store.CompleteCVEScanRun(ctx, organisationID, successRun.ID, "2026-06-29T10:01:00Z", []domain.CVEScanFinding{
+		{CVEID: "CVE-2026-0001", Severity: "high", PackageName: "lib-a", InstalledVersion: "1.0.0"},
+		{CVEID: "CVE-2026-0002", Severity: "medium", PackageName: "lib-b", InstalledVersion: "2.0.0"},
+	}); err != nil {
+		t.Fatalf("complete scan: %v", err)
+	}
+	failedRun, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "manual")
+	if err != nil {
+		t.Fatalf("enqueue failed scan: %v", err)
+	}
+	if err := store.FailCVEScanRun(ctx, organisationID, failedRun.ID, "2026-06-29T10:02:00Z", "scanner failed"); err != nil {
+		t.Fatalf("fail scan: %v", err)
+	}
+	if _, err := store.UpsertReleaseCVEWaiver(ctx, domain.ReleaseCVEWaiver{
+		OrganisationID: organisationID,
+		ReleaseID:      releaseID,
+		CVEID:          "CVE-2026-0001",
+		Note:           "not shipped",
+	}); err != nil {
+		t.Fatalf("upsert waiver: %v", err)
+	}
+
+	storageDir := t.TempDir()
+	oldSBOMDir := filepath.Join(storageDir, "1", "firmware.bin.sbom")
+	if err := os.MkdirAll(oldSBOMDir, 0o755); err != nil {
+		t.Fatalf("create old sbom dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldSBOMDir, "old.spdx"), []byte("SPDXVersion: SPDX-2.3\n"), 0o644); err != nil {
+		t.Fatalf("write old sbom: %v", err)
+	}
+	worker := &recordingCVEWorker{}
+	server := testServerWithTemplates(t, store)
+	server.releaseStorageDir = storageDir
+	server.cveScanWorker = worker
+	user := domain.User{ID: userID, Email: "member@example.com"}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/releases/"+strconv.FormatInt(releaseID, 10)+"?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	detailReq.SetPathValue("releaseID", strconv.FormatInt(releaseID, 10))
+	detailReq = detailReq.WithContext(context.WithValue(detailReq.Context(), userContextKey, user))
+	detailRes := httptest.NewRecorder()
+	server.releaseDetail(detailRes, detailReq)
+	if detailRes.Code != http.StatusOK {
+		t.Fatalf("expected release detail, got %d body=%q", detailRes.Code, detailRes.Body.String())
+	}
+	body := detailRes.Body.String()
+	for _, expected := range []string{
+		"Gateway 1.2.3",
+		"Latest scan failed; showing latest successful scan.",
+		"CVE-2026-0002",
+		"lib-b",
+		"CVE-2026-0001",
+		"not shipped",
+		"https://nvd.nist.gov/vuln/detail/CVE-2026-0002",
+		"Failed",
+		"Mark not relevant",
+		"Unmark",
+		`data-release-events-url="/releases/`,
+		`data-release-cves-url="/releases/`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected release detail to contain %q, got %q", expected, body)
+		}
+	}
+
+	partialReq := httptest.NewRequest(http.MethodGet, "/releases/"+strconv.FormatInt(releaseID, 10)+"/cves?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	partialReq.SetPathValue("releaseID", strconv.FormatInt(releaseID, 10))
+	partialReq = partialReq.WithContext(context.WithValue(partialReq.Context(), userContextKey, user))
+	partialRes := httptest.NewRecorder()
+	server.releaseCVEState(partialRes, partialReq)
+	if partialRes.Code != http.StatusOK {
+		t.Fatalf("expected release cve partial, got %d body=%q", partialRes.Code, partialRes.Body.String())
+	}
+	partialBody := partialRes.Body.String()
+	if !strings.Contains(partialBody, `id="release-cve-state"`) || strings.Contains(partialBody, "<!doctype html>") {
+		t.Fatalf("expected release cve partial only, got %q", partialBody)
+	}
+
+	waiveReq := formRequest(http.MethodPost, "/releases/"+strconv.FormatInt(releaseID, 10)+"/cves/CVE-2026-0002/waiver", url.Values{
+		"organisation_id": {strconv.FormatInt(organisationID, 10)},
+		"note":            {"firmware-only path not linked"},
+	}, user)
+	waiveReq.SetPathValue("releaseID", strconv.FormatInt(releaseID, 10))
+	waiveReq.SetPathValue("cveID", "CVE-2026-0002")
+	waiveRes := httptest.NewRecorder()
+	server.releaseCVEMarkNotRelevantPost(waiveRes, waiveReq)
+	if waiveRes.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after waiver, got %d body=%q", waiveRes.Code, waiveRes.Body.String())
+	}
+	waivedStatus, err := store.ReleaseCVEImpactStatus(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("release cve status after waiver action: %v", err)
+	}
+	if waivedStatus.Status != domain.CVEStatusNotImpacted || waivedStatus.ActiveCVECount != 0 || !waivedStatus.HasLatestScanWarning {
+		t.Fatalf("expected all CVEs waived to produce not impacted status with warning, got %#v", waivedStatus)
+	}
+	waivers, err := store.ListReleaseCVEWaivers(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list waivers after waiver action: %v", err)
+	}
+	if len(waivers) != 2 {
+		t.Fatalf("expected two waivers after marking second CVE, got %#v", waivers)
+	}
+	var sawUserWaiver bool
+	for _, waiver := range waivers {
+		if waiver.CVEID == "CVE-2026-0002" && waiver.Note == "firmware-only path not linked" && waiver.UserID == userID {
+			sawUserWaiver = true
+		}
+	}
+	if !sawUserWaiver {
+		t.Fatalf("expected waiver to record note and user id, got %#v", waivers)
+	}
+
+	waivedPartialReq := httptest.NewRequest(http.MethodGet, "/releases/"+strconv.FormatInt(releaseID, 10)+"/cves?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	waivedPartialReq.SetPathValue("releaseID", strconv.FormatInt(releaseID, 10))
+	waivedPartialReq = waivedPartialReq.WithContext(context.WithValue(waivedPartialReq.Context(), userContextKey, user))
+	waivedPartialRes := httptest.NewRecorder()
+	server.releaseCVEState(waivedPartialRes, waivedPartialReq)
+	waivedPartialBody := waivedPartialRes.Body.String()
+	for _, expected := range []string{"Not impacted", "No active CVEs.", "firmware-only path not linked"} {
+		if !strings.Contains(waivedPartialBody, expected) {
+			t.Fatalf("expected waived cve partial to contain %q, got %q", expected, waivedPartialBody)
+		}
+	}
+
+	unwaiveReq := formRequest(http.MethodPost, "/releases/"+strconv.FormatInt(releaseID, 10)+"/cves/CVE-2026-0002/waiver/delete", url.Values{
+		"organisation_id": {strconv.FormatInt(organisationID, 10)},
+	}, user)
+	unwaiveReq.SetPathValue("releaseID", strconv.FormatInt(releaseID, 10))
+	unwaiveReq.SetPathValue("cveID", "CVE-2026-0002")
+	unwaiveRes := httptest.NewRecorder()
+	server.releaseCVEUnmarkNotRelevantPost(unwaiveRes, unwaiveReq)
+	if unwaiveRes.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after waiver delete, got %d body=%q", unwaiveRes.Code, unwaiveRes.Body.String())
+	}
+	unwaivedStatus, err := store.ReleaseCVEImpactStatus(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("release cve status after waiver delete: %v", err)
+	}
+	if unwaivedStatus.Status != domain.CVEStatusImpacted || unwaivedStatus.ActiveCVECount != 1 {
+		t.Fatalf("expected unmarked CVE to return to active impact, got %#v", unwaivedStatus)
+	}
+
+	rescanReq := formRequest(http.MethodPost, "/releases/"+strconv.FormatInt(releaseID, 10)+"/rescan", url.Values{
+		"organisation_id": {strconv.FormatInt(organisationID, 10)},
+	}, user)
+	rescanReq.SetPathValue("releaseID", strconv.FormatInt(releaseID, 10))
+	rescanRes := httptest.NewRecorder()
+	server.releaseRescanPost(rescanRes, rescanReq)
+	if rescanRes.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after rescan, got %d body=%q", rescanRes.Code, rescanRes.Body.String())
+	}
+	if worker.notifications != 1 {
+		t.Fatalf("expected worker notification after rescan, got %d", worker.notifications)
+	}
+	scanRuns, err := store.ListCVEScanRuns(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list scan runs after rescan: %v", err)
+	}
+	if len(scanRuns) != 3 || scanRuns[0].Status != "pending" || scanRuns[0].Trigger != "manual" {
+		t.Fatalf("expected manual pending scan after rescan, got %#v", scanRuns)
+	}
+
+	var replaceBody bytes.Buffer
+	writer := multipart.NewWriter(&replaceBody)
+	if err := writer.WriteField("organisation_id", strconv.FormatInt(organisationID, 10)); err != nil {
+		t.Fatalf("write org field: %v", err)
+	}
+	replacement, err := writer.CreateFormFile("spdx_files", "replacement.spdx")
+	if err != nil {
+		t.Fatalf("create replacement spdx: %v", err)
+	}
+	if _, err := replacement.Write([]byte("SPDXVersion: SPDX-2.3\nDataLicense: CC0-1.0\nSPDXID: SPDXRef-DOCUMENT\n")); err != nil {
+		t.Fatalf("write replacement spdx: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close replacement body: %v", err)
+	}
+	replaceReq := httptest.NewRequest(http.MethodPost, "/releases/"+strconv.FormatInt(releaseID, 10)+"/sbom", &replaceBody)
+	replaceReq.Header.Set("Content-Type", writer.FormDataContentType())
+	replaceReq.SetPathValue("releaseID", strconv.FormatInt(releaseID, 10))
+	replaceReq = replaceReq.WithContext(context.WithValue(replaceReq.Context(), userContextKey, user))
+	replaceRes := httptest.NewRecorder()
+	server.releaseSBOMReplacePost(replaceRes, replaceReq)
+	if replaceRes.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after sbom replace, got %d body=%q", replaceRes.Code, replaceRes.Body.String())
+	}
+	if worker.notifications != 2 {
+		t.Fatalf("expected worker notification after sbom replace, got %d", worker.notifications)
+	}
+	if _, err := os.Stat(filepath.Join(oldSBOMDir, "old.spdx")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected old sbom file to be removed, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldSBOMDir, "replacement.spdx")); err != nil {
+		t.Fatalf("expected replacement sbom file: %v", err)
+	}
+	replacedSBOM, err := store.CurrentReleaseSBOM(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("current release sbom after replace: %v", err)
+	}
+	if replacedSBOM.FileCount != 1 {
+		t.Fatalf("unexpected replacement sbom metadata: %#v", replacedSBOM)
+	}
+	scanRuns, err = store.ListCVEScanRuns(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list scan runs after replace: %v", err)
+	}
+	if len(scanRuns) != 1 || scanRuns[0].Status != "pending" || scanRuns[0].Trigger != "auto" {
+		t.Fatalf("expected replacement to reset scan history and enqueue auto scan, got %#v", scanRuns)
+	}
+}
+
+type recordingCVEWorker struct {
+	notifications int
+}
+
+func (w *recordingCVEWorker) Notify() {
+	w.notifications++
 }
 
 func testServerWithTemplates(t *testing.T, store *db.Store) *Server {

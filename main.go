@@ -68,7 +68,9 @@ func main() {
 
 func webConfigFromMQTT(mqttConfig mqtt.Config, mqttEnabled bool, taskPublisher web.DeviceTaskPublisher) web.ServerConfig {
 	config := web.ServerConfig{
-		FOTADownloadBaseURL: os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"),
+		FOTADownloadBaseURL:  os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"),
+		CVEScanWorkerEnabled: true,
+		CVEScannerPath:       os.Getenv("ANCHOR_GRYPE_PATH"),
 	}
 	if !mqttEnabled {
 		return config

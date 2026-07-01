@@ -133,13 +133,22 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 	assertColumns(t, store, "software_releases", []string{
 		"id",
 		"organisation_id",
-		"name",
+		"device_model_id",
 		"version",
 		"artifact_path",
 		"artifact_filename",
 		"artifact_content_type",
 		"artifact_size_bytes",
 		"created_at",
+	})
+	assertColumns(t, store, "software_release_sboms", []string{
+		"id",
+		"organisation_id",
+		"release_id",
+		"file_count",
+		"total_size_bytes",
+		"created_at",
+		"updated_at",
 	})
 	assertColumns(t, store, "ota_deployments", []string{
 		"id",
@@ -148,6 +157,39 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"target",
 		"status",
 		"created_at",
+	})
+	assertColumns(t, store, "cve_scan_runs", []string{
+		"id",
+		"organisation_id",
+		"release_id",
+		"release_sbom_id",
+		"trigger_source",
+		"status",
+		"error_message",
+		"created_at",
+		"started_at",
+		"finished_at",
+	})
+	assertColumns(t, store, "cve_scan_findings", []string{
+		"id",
+		"organisation_id",
+		"release_id",
+		"scan_run_id",
+		"cve_id",
+		"severity",
+		"package_name",
+		"installed_version",
+		"created_at",
+	})
+	assertColumns(t, store, "release_cve_waivers", []string{
+		"id",
+		"organisation_id",
+		"release_id",
+		"cve_id",
+		"note",
+		"user_id",
+		"created_at",
+		"updated_at",
 	})
 	assertColumns(t, store, "sessions", []string{
 		"id",
@@ -499,10 +541,12 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other organisation: %v", err)
 	}
+	deviceModelID := testDeviceModelID(t, store, organisationID, "Gateway")
+	otherDeviceModelID := testDeviceModelID(t, store, otherOrganisationID, "Gateway")
 
 	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
 		OrganisationID:      organisationID,
-		Name:                "firmware",
+		DeviceModelID:       deviceModelID,
 		Version:             "1.2.3",
 		ArtifactPath:        "1/firmware.bin",
 		ArtifactFilename:    "firmware.bin",
@@ -512,9 +556,20 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create software release: %v", err)
 	}
+	if _, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       deviceModelID,
+		Version:             "1.2.3",
+		ArtifactPath:        "1/firmware-copy.bin",
+		ArtifactFilename:    "firmware-copy.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected duplicate model/version release conflict, got %v", err)
+	}
 	otherReleaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
 		OrganisationID:      otherOrganisationID,
-		Name:                "firmware",
+		DeviceModelID:       otherDeviceModelID,
 		Version:             "9.9.9",
 		ArtifactPath:        "2/firmware.bin",
 		ArtifactFilename:    "firmware.bin",
@@ -538,7 +593,7 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list software releases: %v", err)
 	}
-	if len(releases) != 1 || releases[0].OrganisationID != organisationID || releases[0].Version != "1.2.3" {
+	if len(releases) != 1 || releases[0].OrganisationID != organisationID || releases[0].DeviceModelID != deviceModelID || releases[0].DeviceModelName != "Gateway" || releases[0].Version != "1.2.3" {
 		t.Fatalf("unexpected releases: %#v", releases)
 	}
 	if releases[0].ArtifactFilename != "firmware.bin" || releases[0].ArtifactSizeBytes != 4 {
@@ -549,7 +604,7 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get software release: %v", err)
 	}
-	if release.ID != releaseID || release.ArtifactPath != "1/firmware.bin" {
+	if release.ID != releaseID || release.DeviceModelID != deviceModelID || release.DeviceModelName != "Gateway" || release.ArtifactPath != "1/firmware.bin" {
 		t.Fatalf("unexpected software release: %#v", release)
 	}
 
@@ -563,6 +618,234 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 
 	if _, err := store.writeDB.ExecContext(ctx, `INSERT INTO ota_deployments (organisation_id, release_id, target, status) VALUES (?, ?, 'bad link', 'running')`, organisationID, otherReleaseID); err == nil {
 		t.Fatal("expected cross-organisation release deployment to fail")
+	}
+}
+
+func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, Config{
+		Dialect: DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID := testOrganisationID(t, store)
+	deviceModelID := testDeviceModelID(t, store, organisationID, "Gateway")
+	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       deviceModelID,
+		Version:             "1.2.3",
+		ArtifactPath:        "1/firmware.bin",
+		ArtifactFilename:    "firmware.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("create software release: %v", err)
+	}
+
+	if _, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "auto"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected enqueue without sbom to fail as not found, got %v", err)
+	}
+	noSBOMStatus, err := store.ReleaseCVEImpactStatus(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("release cve status without sbom: %v", err)
+	}
+	if noSBOMStatus.Status != domain.CVEStatusNoSBOM {
+		t.Fatalf("expected no sbom status, got %#v", noSBOMStatus)
+	}
+
+	sbom, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseID, 2, 128)
+	if err != nil {
+		t.Fatalf("replace release sbom: %v", err)
+	}
+	if sbom.ReleaseID != releaseID || sbom.FileCount != 2 || sbom.TotalSizeBytes != 128 {
+		t.Fatalf("unexpected sbom metadata: %#v", sbom)
+	}
+	currentSBOM, err := store.CurrentReleaseSBOM(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("current release sbom: %v", err)
+	}
+	if currentSBOM.ID != sbom.ID {
+		t.Fatalf("unexpected current sbom: %#v", currentSBOM)
+	}
+
+	run, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "auto")
+	if err != nil {
+		t.Fatalf("enqueue scan: %v", err)
+	}
+	if run.Status != "pending" || run.ReleaseSBOMID != sbom.ID {
+		t.Fatalf("unexpected enqueued run: %#v", run)
+	}
+	if _, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "manual"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected duplicate active scan conflict, got %v", err)
+	}
+	if err := store.StartCVEScanRun(ctx, organisationID, run.ID, "2026-06-29T10:00:00Z"); err != nil {
+		t.Fatalf("start scan: %v", err)
+	}
+	if err := store.CompleteCVEScanRun(ctx, organisationID, run.ID, "2026-06-29T10:01:00Z", []domain.CVEScanFinding{
+		{CVEID: " CVE-2026-0001 ", Severity: "high", PackageName: "lib-a", InstalledVersion: "1.0.0"},
+		{CVEID: "CVE-2026-0001", Severity: "high", PackageName: "lib-a", InstalledVersion: "1.0.0"},
+		{CVEID: "CVE-2026-0002", Severity: "medium", PackageName: "lib-b", InstalledVersion: "2.0.0"},
+	}); err != nil {
+		t.Fatalf("complete scan: %v", err)
+	}
+
+	latest, err := store.LatestSuccessfulCVEScanRun(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("latest successful scan: %v", err)
+	}
+	if latest.ID != run.ID || latest.Status != "success" {
+		t.Fatalf("unexpected latest successful scan: %#v", latest)
+	}
+	findings, err := store.ListCurrentCVEFindings(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list current findings: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("expected deduped current findings, got %#v", findings)
+	}
+	failedRun, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "manual")
+	if err != nil {
+		t.Fatalf("enqueue failed scan: %v", err)
+	}
+	if err := store.FailCVEScanRun(ctx, organisationID, failedRun.ID, "2026-06-29T10:02:00Z", "scanner failed"); err != nil {
+		t.Fatalf("fail scan: %v", err)
+	}
+	latest, err = store.LatestSuccessfulCVEScanRun(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("latest successful scan after failed attempt: %v", err)
+	}
+	if latest.ID != run.ID {
+		t.Fatalf("expected latest successful scan to ignore later failed scan, got %#v", latest)
+	}
+	runsBeforeReplacement, err := store.ListCVEScanRuns(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list scan runs: %v", err)
+	}
+	if len(runsBeforeReplacement) != 2 {
+		t.Fatalf("expected successful and failed scan history, got %#v", runsBeforeReplacement)
+	}
+	status, err := store.ReleaseCVEImpactStatus(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("release cve status after failed latest: %v", err)
+	}
+	if status.Status != domain.CVEStatusImpacted || !status.HasLatestScanWarning || status.ActiveCVECount != 2 || status.HighestActiveSeverity != "high" {
+		t.Fatalf("unexpected failed-latest release status: %#v", status)
+	}
+
+	waiver, err := store.UpsertReleaseCVEWaiver(ctx, domain.ReleaseCVEWaiver{
+		OrganisationID: organisationID,
+		ReleaseID:      releaseID,
+		CVEID:          " CVE-2026-0001 ",
+		Note:           " not relevant for this build ",
+		UserID:         42,
+	})
+	if err != nil {
+		t.Fatalf("upsert waiver: %v", err)
+	}
+	if waiver.CVEID != "CVE-2026-0001" || waiver.Note != "not relevant for this build" || waiver.UserID != 42 {
+		t.Fatalf("unexpected waiver: %#v", waiver)
+	}
+	activeFindings, err := store.ListActiveCVEFindings(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list active findings: %v", err)
+	}
+	if len(activeFindings) != 1 || activeFindings[0].CVEID != "CVE-2026-0002" {
+		t.Fatalf("expected waiver to filter active findings, got %#v", activeFindings)
+	}
+	waivers, err := store.ListReleaseCVEWaivers(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list waivers: %v", err)
+	}
+	if len(waivers) != 1 || waivers[0].CVEID != "CVE-2026-0001" {
+		t.Fatalf("unexpected waivers: %#v", waivers)
+	}
+	status, err = store.ReleaseCVEImpactStatus(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("release cve status after waiver: %v", err)
+	}
+	if status.Status != domain.CVEStatusImpacted || status.ActiveCVECount != 1 || status.HighestActiveSeverity != "medium" || !status.HasLatestScanWarning {
+		t.Fatalf("expected waiver-filtered impacted status with warning, got %#v", status)
+	}
+	if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+		Device: domain.Device{
+			ID:               "device-matched",
+			OrganisationID:   organisationID,
+			DeviceModelID:    deviceModelID,
+			SoftwareVersions: domain.SoftwareVersions{"firmware": "1.2.3"},
+		},
+		Credential: domain.DeviceMQTTCredential{
+			DeviceID:     "device-matched",
+			Username:     "device-matched",
+			PasswordHash: "hash",
+			Enabled:      true,
+		},
+	}); err != nil {
+		t.Fatalf("save matched device: %v", err)
+	}
+	deviceStatus, err := store.DeviceCVEImpactStatus(ctx, organisationID, "device-matched")
+	if err != nil {
+		t.Fatalf("matched device cve status: %v", err)
+	}
+	if deviceStatus.Status != domain.CVEStatusImpacted || deviceStatus.MatchedReleaseID != releaseID || deviceStatus.ActiveCVECount != 1 {
+		t.Fatalf("unexpected matched device cve status: %#v", deviceStatus)
+	}
+	if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+		Device: domain.Device{
+			ID:               "device-unknown-release",
+			OrganisationID:   organisationID,
+			DeviceModelID:    deviceModelID,
+			SoftwareVersions: domain.SoftwareVersions{"firmware": "9.9.9"},
+		},
+		Credential: domain.DeviceMQTTCredential{
+			DeviceID:     "device-unknown-release",
+			Username:     "device-unknown-release",
+			PasswordHash: "hash",
+			Enabled:      true,
+		},
+	}); err != nil {
+		t.Fatalf("save unknown-release device: %v", err)
+	}
+	unknownDeviceStatus, err := store.DeviceCVEImpactStatus(ctx, organisationID, "device-unknown-release")
+	if err != nil {
+		t.Fatalf("unknown-release device cve status: %v", err)
+	}
+	if unknownDeviceStatus.Status != domain.CVEStatusUnknownRelease {
+		t.Fatalf("expected unknown release device status, got %#v", unknownDeviceStatus)
+	}
+
+	if _, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseID, 1, 64); err != nil {
+		t.Fatalf("replace release sbom again: %v", err)
+	}
+	runs, err := store.ListCVEScanRuns(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list scan runs after sbom replacement: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected sbom replacement to clear scan history, got %#v", runs)
+	}
+	if _, err := store.LatestSuccessfulCVEScanRun(ctx, organisationID, releaseID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected no latest successful scan after sbom replacement, got %v", err)
+	}
+	waivers, err = store.ListReleaseCVEWaivers(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("list waivers after sbom replacement: %v", err)
+	}
+	if len(waivers) != 1 {
+		t.Fatalf("expected release-scoped waiver to survive sbom replacement, got %#v", waivers)
+	}
+
+	if err := store.ClearReleaseSBOM(ctx, organisationID, releaseID); err != nil {
+		t.Fatalf("clear release sbom: %v", err)
+	}
+	if _, err := store.CurrentReleaseSBOM(ctx, organisationID, releaseID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected no current sbom after clear, got %v", err)
 	}
 }
 
@@ -733,6 +1016,12 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 			ValueType:    "number",
 			TSObservedMS: 1200,
 		},
+		{
+			Path:         "firmware",
+			ValueJSON:    `" 1.2.3 "`,
+			ValueType:    "string",
+			TSObservedMS: 1200,
+		},
 	})
 	if err != nil {
 		t.Fatalf("record device event: %v", err)
@@ -745,7 +1034,7 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list twin properties: %v", err)
 	}
-	if len(properties) != 1 || properties[0].Path != "battery" || properties[0].ValueJSON != "87" {
+	if len(properties) != 2 || properties[0].Path != "battery" || properties[0].ValueJSON != "87" || properties[1].Path != "firmware" {
 		t.Fatalf("unexpected twin properties: %#v", properties)
 	}
 	if properties[0].SourceEventID == nil || *properties[0].SourceEventID != eventID {
@@ -766,6 +1055,37 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 	}
 	if detail.Device.ExpectedHeartbeatSeconds != 60 || detail.Device.LastEventReceivedMS != 1234 {
 		t.Fatalf("unexpected device heartbeat/event fields: %#v", detail.Device)
+	}
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.3" {
+		t.Fatalf("expected firmware software version to be trimmed and stored, got %#v", detail.Device.SoftwareVersions)
+	}
+
+	if _, err := store.RecordDeviceEvent(ctx, domain.DeviceEvent{
+		DeviceID:      "device-001",
+		TSReceivedMS:  1235,
+		Protocol:      "mqtt",
+		Direction:     "inbound",
+		Operation:     "publish",
+		Topic:         "dev/1/device-001/data",
+		ContentFormat: "application/json",
+		PayloadJSON:   `{"firmware":123}`,
+		Source:        "broker",
+	}, []domain.DeviceTwinProperty{
+		{
+			Path:         "firmware",
+			ValueJSON:    "123",
+			ValueType:    "number",
+			TSObservedMS: 1235,
+		},
+	}); err != nil {
+		t.Fatalf("record non-string firmware event: %v", err)
+	}
+	detail, err = store.DeviceDetail(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("load device detail after non-string firmware: %v", err)
+	}
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.3" {
+		t.Fatalf("expected non-string firmware telemetry not to update software versions, got %#v", detail.Device.SoftwareVersions)
 	}
 }
 
@@ -792,6 +1112,76 @@ func TestDeviceEventSubscriptionsArePerDevice(t *testing.T) {
 	select {
 	case <-deviceBEvents:
 		t.Fatal("did not expect device-b notification")
+	default:
+	}
+}
+
+func TestReleaseCVEScanSubscriptionsArePerRelease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store, err := Open(ctx, Config{
+		Dialect: DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID := testOrganisationID(t, store)
+	modelID := testDeviceModelID(t, store, organisationID, "Gateway")
+	releaseAID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       modelID,
+		Version:             "1.0.0",
+		ArtifactPath:        "1/firmware-a.bin",
+		ArtifactFilename:    "firmware-a.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("create release a: %v", err)
+	}
+	releaseBID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       modelID,
+		Version:             "2.0.0",
+		ArtifactPath:        "1/firmware-b.bin",
+		ArtifactFilename:    "firmware-b.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("create release b: %v", err)
+	}
+	if _, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseAID, 1, 64); err != nil {
+		t.Fatalf("replace release a sbom: %v", err)
+	}
+	if _, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseBID, 1, 64); err != nil {
+		t.Fatalf("replace release b sbom: %v", err)
+	}
+
+	releaseAEvents, unsubscribeA := store.SubscribeReleaseCVEScans(ctx, organisationID, releaseAID)
+	defer unsubscribeA()
+	releaseBEvents, unsubscribeB := store.SubscribeReleaseCVEScans(ctx, organisationID, releaseBID)
+	defer unsubscribeB()
+
+	if _, err := store.EnqueueCVEScan(ctx, organisationID, releaseAID, "manual"); err != nil {
+		t.Fatalf("enqueue release a scan: %v", err)
+	}
+
+	select {
+	case <-releaseAEvents:
+	case <-time.After(time.Second):
+		t.Fatal("expected release-a notification")
+	}
+
+	select {
+	case <-releaseBEvents:
+		t.Fatal("did not expect release-b notification")
 	default:
 	}
 }

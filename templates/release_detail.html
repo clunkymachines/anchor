@@ -1,0 +1,240 @@
+{{template "app_page_start" (dict "Title" (printf "%s %s - Anchor" .Release.DeviceModelName .Release.Version) "Shell" .Shell "Active" "releases" "OrganisationAction" (printf "/releases/%d" .Release.ID) "SearchPlaceholder" "Search releases" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">{{.Release.DeviceModelName}} {{.Release.Version}}</h1>
+							<p class="page-subtitle">Firmware release CVE state.</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/releases?organisation_id={{.Release.OrganisationID}}">Back to releases</a>
+							<form method="post" action="/releases/{{.Release.ID}}/rescan">
+								<input type="hidden" name="organisation_id" value="{{.Release.OrganisationID}}">
+								<button class="button button-primary" type="submit">Rescan</button>
+							</form>
+						</div>
+					</header>
+
+					{{template "release_cve_state" .}}
+
+					<section class="card form-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Replace SBOM</h2>
+								<p class="card-subtitle">Upload the complete SPDX set for this release</p>
+							</div>
+						</header>
+						<div class="card-body">
+							{{if .ReplaceFormError}}
+								<p class="form-error">{{.ReplaceFormError}}</p>
+							{{end}}
+							<form method="post" action="/releases/{{.Release.ID}}/sbom" enctype="multipart/form-data">
+								<input type="hidden" name="organisation_id" value="{{.Release.OrganisationID}}">
+								<label class="field">
+									<span class="field-label">SPDX files</span>
+									<input class="input file-input" name="spdx_files" type="file" accept=".spdx" multiple required>
+									<span class="field-help">Replacement is the full SBOM set. Up to 10 .spdx files, 25 MB each, 100 MB total.</span>
+								</label>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Replace SBOM</button>
+								</div>
+							</form>
+						</div>
+					</section>
+
+				</main>
+{{template "app_page_end" .}}
+
+{{define "release_cve_state"}}
+<div id="release-cve-state"
+	data-release-events-url="/releases/{{.Release.ID}}/events?organisation_id={{.Release.OrganisationID}}"
+	data-release-cves-url="/releases/{{.Release.ID}}/cves?organisation_id={{.Release.OrganisationID}}">
+	<div class="device-detail-top-grid">
+		<section class="card form-card">
+			<header class="card-header">
+				<div>
+					<h2 class="card-title">Release</h2>
+					<p class="card-subtitle">Firmware artifact</p>
+				</div>
+			</header>
+			<div class="card-body">
+				<dl class="key-value-list">
+					<div class="key-value-row">
+						<dt class="key-value-label">Device model</dt>
+						<dd class="key-value-value">{{.Release.DeviceModelName}}</dd>
+					</div>
+					<div class="key-value-row">
+						<dt class="key-value-label">Version</dt>
+						<dd class="key-value-value value-mono">{{.Release.Version}}</dd>
+					</div>
+					<div class="key-value-row">
+						<dt class="key-value-label">Binary</dt>
+						<dd class="key-value-value"><a class="table-link" href="/org/{{.Release.OrganisationID}}/releases/{{.Release.ID}}/binary">{{.Release.ArtifactFilename}}</a></dd>
+					</div>
+					<div class="key-value-row">
+						<dt class="key-value-label">Binary size</dt>
+						<dd class="key-value-value value-mono">{{.Release.ArtifactSizeBytes}} bytes</dd>
+					</div>
+					<div class="key-value-row">
+						<dt class="key-value-label">Created</dt>
+						<dd class="key-value-value value-mono">{{.Release.CreatedAt}}</dd>
+					</div>
+				</dl>
+			</div>
+		</section>
+
+		<section class="card form-card">
+			<header class="card-header">
+				<div>
+					<h2 class="card-title">CVE status</h2>
+					<p class="card-subtitle">Latest successful scan view</p>
+				</div>
+			</header>
+			<div class="card-body">
+				<dl class="key-value-list">
+					<div class="key-value-row">
+						<dt class="key-value-label">Status</dt>
+						<dd class="key-value-value"><span class="status-pill {{.CVEStatus.StatusClass}}">{{.CVEStatus.Label}}{{if .CVEStatus.HighestLabel}} · {{.CVEStatus.HighestLabel}}{{end}}</span></dd>
+					</div>
+					<div class="key-value-row">
+						<dt class="key-value-label">Active CVEs</dt>
+						<dd class="key-value-value value-mono">{{.CVEStatus.ActiveCount}}</dd>
+					</div>
+					<div class="key-value-row">
+						<dt class="key-value-label">SBOM</dt>
+						<dd class="key-value-value">
+							{{if .SBOM.Present}}
+								<span class="value-mono">{{.SBOM.FileCount}} SPDX files · {{.SBOM.TotalSizeBytes}} bytes</span>
+							{{else}}
+								<span class="muted-text">No SBOM</span>
+							{{end}}
+						</dd>
+					</div>
+					{{if .SBOM.Present}}
+						<div class="key-value-row">
+							<dt class="key-value-label">SBOM updated</dt>
+							<dd class="key-value-value value-mono">{{.SBOM.UpdatedAt}}</dd>
+						</div>
+					{{end}}
+				</dl>
+				{{if .CVEStatus.Warning}}
+					<p class="form-error">{{.CVEStatus.Warning}}</p>
+				{{end}}
+				{{if .RescanFormError}}
+					<p class="form-error">{{.RescanFormError}}</p>
+				{{end}}
+			</div>
+		</section>
+	</div>
+
+	<section class="card data-table-card">
+		<header class="card-header">
+			<div>
+				<h2 class="card-title">Active CVEs</h2>
+				<p class="card-subtitle">{{len .ActiveCVEs}} CVEs after waivers</p>
+			</div>
+		</header>
+		{{template "release_cve_groups" (dict "Groups" .ActiveCVEs "Empty" "No active CVEs." "ReleaseID" .Release.ID "OrganisationID" .Release.OrganisationID "Waived" false)}}
+	</section>
+
+	<section class="card data-table-card">
+		<header class="card-header">
+			<div>
+				<h2 class="card-title">Waived CVEs</h2>
+				<p class="card-subtitle">{{len .WaivedCVEs}} CVEs marked not relevant</p>
+			</div>
+		</header>
+		{{template "release_cve_groups" (dict "Groups" .WaivedCVEs "Empty" "No waived CVEs." "ReleaseID" .Release.ID "OrganisationID" .Release.OrganisationID "Waived" true)}}
+	</section>
+
+	<section class="card data-table-card">
+		<header class="card-header">
+			<div>
+				<h2 class="card-title">Scan history</h2>
+				<p class="card-subtitle">{{len .ScanRuns}} runs for the current SBOM</p>
+			</div>
+		</header>
+		<div class="data-table-wrapper">
+			<table class="data-table">
+				<thead>
+					<tr>
+						<th scope="col">ID</th>
+						<th scope="col">Trigger</th>
+						<th scope="col">Status</th>
+						<th scope="col">Created</th>
+						<th scope="col">Started</th>
+						<th scope="col">Finished</th>
+						<th scope="col">Error</th>
+					</tr>
+				</thead>
+				<tbody>
+					{{range .ScanRuns}}
+						<tr>
+							<td class="value-mono">{{.ID}}</td>
+							<td>{{.Trigger}}</td>
+							<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
+							<td class="value-mono">{{.CreatedAt}}</td>
+							<td class="value-mono">{{if .StartedAt}}{{.StartedAt}}{{else}}<span class="muted-text">Not started</span>{{end}}</td>
+							<td class="value-mono">{{if .FinishedAt}}{{.FinishedAt}}{{else}}<span class="muted-text">Not finished</span>{{end}}</td>
+							<td class="table-cell-wrap">{{if .ErrorMessage}}{{.ErrorMessage}}{{else}}<span class="muted-text">None</span>{{end}}</td>
+						</tr>
+					{{else}}
+						<tr>
+							<td class="empty-table-cell" colspan="7">No scan runs.</td>
+						</tr>
+					{{end}}
+				</tbody>
+			</table>
+		</div>
+	</section>
+</div>
+{{end}}
+
+{{define "release_cve_groups"}}
+<div class="data-table-wrapper">
+	<table class="data-table">
+		<thead>
+			<tr>
+				<th scope="col">CVE</th>
+				<th scope="col">Severity</th>
+				<th scope="col">Evidence</th>
+				<th scope="col">Note</th>
+				<th scope="col" class="table-action-column">Actions</th>
+			</tr>
+		</thead>
+		<tbody>
+			{{range .Groups}}
+				<tr>
+					<td><a class="table-link value-mono" href="{{.NVDURL}}" target="_blank" rel="noreferrer">{{.CVEID}}</a></td>
+					<td>{{if .Severity}}<span class="status-pill {{.SeverityClass}}">{{.Severity}}</span>{{else}}<span class="muted-text">Unknown</span>{{end}}</td>
+					<td class="table-cell-wrap">
+						{{range .Evidence}}
+							<div><span class="value-mono">{{.PackageName}}</span> <span class="muted-text">{{.InstalledVersion}}</span></div>
+						{{else}}
+							<span class="muted-text">No current finding evidence</span>
+						{{end}}
+					</td>
+					<td class="table-cell-wrap">{{if .WaiverNote}}{{.WaiverNote}}{{else}}<span class="muted-text">None</span>{{end}}</td>
+					<td class="table-actions-cell">
+						{{if $.Waived}}
+							<form method="post" action="/releases/{{$.ReleaseID}}/cves/{{.CVEID}}/waiver/delete">
+								<input type="hidden" name="organisation_id" value="{{$.OrganisationID}}">
+								<button class="button button-secondary button-small" type="submit">Unmark</button>
+							</form>
+						{{else}}
+							<form method="post" action="/releases/{{$.ReleaseID}}/cves/{{.CVEID}}/waiver">
+								<input type="hidden" name="organisation_id" value="{{$.OrganisationID}}">
+								<input class="input" name="note" placeholder="Optional note">
+								<button class="button button-secondary button-small" type="submit">Mark not relevant</button>
+							</form>
+						{{end}}
+					</td>
+				</tr>
+			{{else}}
+				<tr>
+					<td class="empty-table-cell" colspan="5">{{.Empty}}</td>
+				</tr>
+			{{end}}
+		</tbody>
+	</table>
+</div>
+{{end}}

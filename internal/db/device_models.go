@@ -61,9 +61,10 @@ func (s *Store) CreateDeviceModel(ctx context.Context, model domain.DeviceModel)
 func (s *Store) ListDeviceModels(ctx context.Context, organisationID int64) ([]domain.DeviceModel, error) {
 	query := `
 		SELECT m.id, m.organisation_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
-			m.expected_release_id, COALESCE(r.name, ''), COALESCE(r.version, ''), m.created_at
+			m.expected_release_id, COALESCE(rm.name, ''), COALESCE(r.version, ''), m.created_at
 		FROM device_models m
 		LEFT JOIN software_releases r ON r.id = m.expected_release_id AND r.organisation_id = m.organisation_id
+		LEFT JOIN device_models rm ON rm.id = r.device_model_id AND rm.organisation_id = r.organisation_id
 		WHERE m.organisation_id = ?
 		ORDER BY m.name
 	`
@@ -71,9 +72,10 @@ func (s *Store) ListDeviceModels(ctx context.Context, organisationID int64) ([]d
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
 			SELECT m.id, m.organisation_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
-				m.expected_release_id, COALESCE(r.name, ''), COALESCE(r.version, ''), m.created_at
+				m.expected_release_id, COALESCE(rm.name, ''), COALESCE(r.version, ''), m.created_at
 			FROM device_models m
 			LEFT JOIN software_releases r ON r.id = m.expected_release_id AND r.organisation_id = m.organisation_id
+			LEFT JOIN device_models rm ON rm.id = r.device_model_id AND rm.organisation_id = r.organisation_id
 			WHERE m.organisation_id = $1
 			ORDER BY m.name
 		`
@@ -102,18 +104,20 @@ func (s *Store) ListDeviceModels(ctx context.Context, organisationID int64) ([]d
 func (s *Store) DeviceModel(ctx context.Context, modelID int64, organisationID int64) (domain.DeviceModel, error) {
 	query := `
 		SELECT m.id, m.organisation_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
-			m.expected_release_id, COALESCE(r.name, ''), COALESCE(r.version, ''), m.created_at
+			m.expected_release_id, COALESCE(rm.name, ''), COALESCE(r.version, ''), m.created_at
 		FROM device_models m
 		LEFT JOIN software_releases r ON r.id = m.expected_release_id AND r.organisation_id = m.organisation_id
+		LEFT JOIN device_models rm ON rm.id = r.device_model_id AND rm.organisation_id = r.organisation_id
 		WHERE m.id = ? AND m.organisation_id = ?
 	`
 	args := []any{modelID, organisationID}
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
 			SELECT m.id, m.organisation_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
-				m.expected_release_id, COALESCE(r.name, ''), COALESCE(r.version, ''), m.created_at
+				m.expected_release_id, COALESCE(rm.name, ''), COALESCE(r.version, ''), m.created_at
 			FROM device_models m
 			LEFT JOIN software_releases r ON r.id = m.expected_release_id AND r.organisation_id = m.organisation_id
+			LEFT JOIN device_models rm ON rm.id = r.device_model_id AND rm.organisation_id = r.organisation_id
 			WHERE m.id = $1 AND m.organisation_id = $2
 		`
 	}
@@ -142,7 +146,7 @@ func scanDeviceModel(row deviceModelScanner) (domain.DeviceModel, error) {
 		&model.ExpectedHeartbeatSeconds,
 		&model.ExpectedProtocol,
 		&expectedReleaseID,
-		&model.ExpectedReleaseName,
+		&model.ExpectedReleaseModelName,
 		&model.ExpectedReleaseVersion,
 		&model.CreatedAt,
 	); err != nil {

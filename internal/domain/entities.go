@@ -95,8 +95,8 @@ type DeviceModel struct {
 	ExpectedProtocol string
 	// ExpectedReleaseID optionally identifies the expected software release.
 	ExpectedReleaseID *int64
-	// ExpectedReleaseName is populated when listing models with release details.
-	ExpectedReleaseName string
+	// ExpectedReleaseModelName is populated when listing models with release details.
+	ExpectedReleaseModelName string
 	// ExpectedReleaseVersion is populated when listing models with release details.
 	ExpectedReleaseVersion string
 	// CreatedAt is the model creation timestamp.
@@ -235,8 +235,10 @@ type SoftwareRelease struct {
 	ID int64
 	// OrganisationID identifies the organisation that owns the release.
 	OrganisationID int64
-	// Name is the software component or product name.
-	Name string
+	// DeviceModelID identifies the model this firmware release targets.
+	DeviceModelID int64
+	// DeviceModelName is populated when listing releases with model details.
+	DeviceModelName string
 	// Version is the release version string.
 	Version string
 	// ArtifactPath is the relative path to the release binary in artifact storage.
@@ -251,6 +253,86 @@ type SoftwareRelease struct {
 	CreatedAt string
 }
 
+type ReleaseSBOM struct {
+	// ID is the current SBOM set identifier for a release.
+	ID int64
+	// OrganisationID identifies the organisation that owns the release.
+	OrganisationID int64
+	// ReleaseID identifies the software release this SBOM belongs to.
+	ReleaseID int64
+	// FileCount is the number of SPDX files in the current SBOM set.
+	FileCount int
+	// TotalSizeBytes is the aggregate SPDX upload size in bytes.
+	TotalSizeBytes int64
+	// CreatedAt is when this SBOM set was registered.
+	CreatedAt string
+	// UpdatedAt is when this SBOM set was last replaced.
+	UpdatedAt string
+}
+
+type CVEScanRun struct {
+	// ID is the internal scan run identifier.
+	ID int64
+	// OrganisationID identifies the organisation that owns the release.
+	OrganisationID int64
+	// ReleaseID identifies the release being scanned.
+	ReleaseID int64
+	// ReleaseSBOMID identifies the current SBOM set being scanned.
+	ReleaseSBOMID int64
+	// Trigger is auto or manual.
+	Trigger string
+	// Status is pending, running, success, or failed.
+	Status string
+	// ErrorMessage stores scanner failure detail for failed runs.
+	ErrorMessage string
+	// CreatedAt is when the scan was enqueued.
+	CreatedAt string
+	// StartedAt is set when the worker starts the scan.
+	StartedAt string
+	// FinishedAt is set when the scan reaches a terminal state.
+	FinishedAt string
+}
+
+type CVEScanFinding struct {
+	// ID is the internal finding identifier.
+	ID int64
+	// OrganisationID identifies the organisation that owns the release.
+	OrganisationID int64
+	// ReleaseID identifies the scanned release.
+	ReleaseID int64
+	// ScanRunID identifies the scan run that produced this finding.
+	ScanRunID int64
+	// CVEID is the vulnerability identifier, such as CVE-2026-1234.
+	CVEID string
+	// Severity is the scanner-provided severity.
+	Severity string
+	// PackageName is the scanner-provided package or component name.
+	PackageName string
+	// InstalledVersion is the vulnerable installed version.
+	InstalledVersion string
+	// CreatedAt is when this finding was stored.
+	CreatedAt string
+}
+
+type ReleaseCVEWaiver struct {
+	// ID is the internal waiver identifier.
+	ID int64
+	// OrganisationID identifies the organisation that owns the release.
+	OrganisationID int64
+	// ReleaseID identifies the release this waiver applies to.
+	ReleaseID int64
+	// CVEID is the release-scoped CVE being marked not relevant.
+	CVEID string
+	// Note is the optional user note.
+	Note string
+	// UserID identifies the user who marked the CVE not relevant when available.
+	UserID int64
+	// CreatedAt is when this waiver was first created.
+	CreatedAt string
+	// UpdatedAt is when this waiver was last updated.
+	UpdatedAt string
+}
+
 type OTADeployment struct {
 	// ID is the internal OTA deployment identifier.
 	ID int64
@@ -258,8 +340,8 @@ type OTADeployment struct {
 	OrganisationID int64
 	// ReleaseID identifies the software release being deployed.
 	ReleaseID int64
-	// ReleaseName is the software component or product name being deployed.
-	ReleaseName string
+	// ReleaseModelName is the device model name for the release being deployed.
+	ReleaseModelName string
 	// ReleaseVersion is the version string being deployed.
 	ReleaseVersion string
 	// Target is the deployment target, such as a fleet, organisation, or filter.

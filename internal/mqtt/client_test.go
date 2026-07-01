@@ -80,6 +80,75 @@ func TestHandlePublishRecordsEventAndTwin(t *testing.T) {
 	}
 }
 
+func TestHandlePublishUpdatesFirmwareSoftwareVersionFromStringTelemetry(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+		Device: domain.Device{
+			ID:               "device-001",
+			OrganisationID:   organisationID,
+			DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
+			ModelName:        "Sensor",
+			SoftwareVersions: domain.SoftwareVersions{},
+		},
+		Credential: domain.DeviceMQTTCredential{
+			DeviceID:     "device-001",
+			Username:     "device-001",
+			PasswordHash: "hash",
+			Enabled:      true,
+		},
+	}); err != nil {
+		t.Fatalf("save device with mqtt credential: %v", err)
+	}
+
+	client := NewClient(store, Config{}, slog.Default())
+	client.handlePublish(ctx, &paho.Publish{
+		Topic:   "dev/" + int64String(organisationID) + "/device-001/data",
+		Payload: []byte(`{"firmware":" 1.2.3 "}`),
+		Properties: &paho.PublishProperties{
+			ContentType: "application/json",
+		},
+	})
+
+	detail, err := store.DeviceDetail(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("device detail after firmware telemetry: %v", err)
+	}
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.3" {
+		t.Fatalf("expected trimmed firmware version, got %#v", detail.Device.SoftwareVersions)
+	}
+
+	client.handlePublish(ctx, &paho.Publish{
+		Topic:   "dev/" + int64String(organisationID) + "/device-001/data",
+		Payload: []byte(`{"firmware":123}`),
+		Properties: &paho.PublishProperties{
+			ContentType: "application/json",
+		},
+	})
+
+	detail, err = store.DeviceDetail(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("device detail after non-string firmware telemetry: %v", err)
+	}
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.3" {
+		t.Fatalf("expected non-string firmware telemetry to be ignored for matching state, got %#v", detail.Device.SoftwareVersions)
+	}
+}
+
 func TestHandlePublishUpdatesTaskStatus(t *testing.T) {
 	t.Parallel()
 
