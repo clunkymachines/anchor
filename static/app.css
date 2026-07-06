@@ -609,6 +609,11 @@ a {
   padding: 0 18px 18px;
 }
 
+.card-body > form {
+  display: grid;
+  gap: 14px;
+}
+
 .card-title {
   margin: 0;
   font-size: var(--text-md);
@@ -928,6 +933,14 @@ a {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+}
+
+.card-body > .form-actions {
+  margin-top: 14px;
+}
+
+.card-body > .field + .field {
+  margin-top: 14px;
 }
 
 .tabs {

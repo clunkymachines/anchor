@@ -1,0 +1,83 @@
+{{template "app_page_start" (dict "Title" (printf "%s - Anchor" .Model.Name) "Shell" .Shell "Active" "device-models" "OrganisationAction" (printf "/device-models/%d" .Model.ID) "SearchPlaceholder" "Search device models" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">{{.Model.Name}}</h1>
+							<p class="page-subtitle">Device model expectations.</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/device-models?organisation_id={{.Model.OrganisationID}}">Back to models</a>
+						</div>
+					</header>
+
+					<div class="device-detail-top-grid">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Model</h2>
+									<p class="card-subtitle">Shared device expectations</p>
+								</div>
+							</header>
+							<div class="card-body">
+								<dl class="key-value-list">
+									<div class="key-value-row">
+										<dt class="key-value-label">Name</dt>
+										<dd class="key-value-value">{{.Model.Name}}</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Heartbeat</dt>
+										<dd class="key-value-value value-mono">{{.Model.ExpectedHeartbeatSeconds}}s</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Protocol</dt>
+										<dd class="key-value-value"><span class="protocol-pill">{{.Model.ExpectedProtocol}}</span></dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Expected release</dt>
+										<dd class="key-value-value">
+											{{if .Model.ExpectedReleaseLabel}}
+												<span class="value-mono">{{.Model.ExpectedReleaseLabel}}</span>
+											{{else}}
+												<span class="muted-text">None</span>
+											{{end}}
+										</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Created</dt>
+										<dd class="key-value-value value-mono">{{.Model.CreatedAt}}</dd>
+									</div>
+								</dl>
+							</div>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Expected release</h2>
+									<p class="card-subtitle">Release target for this model</p>
+								</div>
+							</header>
+							<div class="card-body">
+								{{if .ExpectedReleaseFormError}}
+									<p class="form-error">{{.ExpectedReleaseFormError}}</p>
+								{{end}}
+								<form method="post" action="/device-models/{{.Model.ID}}/expected-release">
+									<input type="hidden" name="organisation_id" value="{{.Model.OrganisationID}}">
+									<label class="field">
+										<span class="field-label">Release</span>
+										<select class="input" name="expected_release_id">
+											<option value="" {{if not .Model.ExpectedReleaseID}}selected{{end}}>None</option>
+											{{range .Releases}}
+												<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+											{{end}}
+										</select>
+									</label>
+									<div class="form-actions">
+										<button class="button button-primary" type="submit">Update expected release</button>
+									</div>
+								</form>
+							</div>
+						</section>
+					</div>
+				</main>
+{{template "app_page_end" .}}

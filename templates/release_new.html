@@ -1,0 +1,61 @@
+{{template "app_page_start" (dict "Title" "Create release - Anchor" "Shell" .Shell "Active" "releases" "OrganisationAction" "/releases/new" "SearchPlaceholder" "Search releases" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Create release</h1>
+							<p class="page-subtitle">Upload a firmware binary and optional SPDX SBOM.</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/releases?organisation_id={{.Shell.SelectedOrganisationID}}">Back to releases</a>
+						</div>
+					</header>
+
+					<form class="device-create-form" method="post" action="/releases" enctype="multipart/form-data">
+						<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Release artifact</h2>
+									<p class="card-subtitle">Firmware release for one device model and version</p>
+								</div>
+							</header>
+							<div class="card-body">
+								{{if .ReleaseFormError}}
+									<p class="form-error">{{.ReleaseFormError}}</p>
+								{{end}}
+								{{if .ReleaseFormNote}}
+									<p class="field-help">{{.ReleaseFormNote}}</p>
+								{{end}}
+								<div class="form-grid">
+									<label class="field">
+										<span class="field-label">Device model</span>
+										<select class="input" name="device_model_id" required {{if not .DeviceModels}}disabled{{end}}>
+											{{range .DeviceModels}}
+												<option value="{{.ID}}">{{.Name}}</option>
+											{{else}}
+												<option>No device models available</option>
+											{{end}}
+										</select>
+									</label>
+									<label class="field">
+										<span class="field-label">Version</span>
+										<input class="input" name="version" placeholder="1.2.3" required>
+									</label>
+									<label class="field field-wide">
+										<span class="field-label">Binary</span>
+										<input class="input file-input" name="artifact" type="file" required>
+									</label>
+									<label class="field field-wide">
+										<span class="field-label">SPDX SBOM</span>
+										<input class="input file-input" name="spdx_files" type="file" accept=".spdx" multiple>
+										<span class="field-help">Optional. Up to 10 .spdx files, 25 MB each, 100 MB total.</span>
+									</label>
+								</div>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit" {{if not .DeviceModels}}disabled{{end}}>Create release</button>
+								</div>
+							</div>
+						</section>
+					</form>
+				</main>
+{{template "app_page_end" .}}

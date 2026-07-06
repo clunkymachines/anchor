@@ -5,55 +5,10 @@
 							<h1 class="page-title">Releases</h1>
 							<p class="page-subtitle">Firmware artifacts by device model and version.</p>
 						</div>
+						<div class="page-actions">
+							<a class="button button-primary" href="/releases/new?organisation_id={{.Shell.SelectedOrganisationID}}">Create release</a>
+						</div>
 					</header>
-
-					<form class="device-create-form" method="post" action="/releases" enctype="multipart/form-data">
-						<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
-						<section class="card form-card">
-							<header class="card-header">
-								<div>
-									<h2 class="card-title">Create release</h2>
-									<p class="card-subtitle">Upload a binary artifact for this organisation</p>
-								</div>
-							</header>
-							<div class="card-body">
-								{{if .ReleaseFormError}}
-									<p class="form-error">{{.ReleaseFormError}}</p>
-								{{end}}
-								{{if .ReleaseFormNote}}
-									<p class="field-help">{{.ReleaseFormNote}}</p>
-								{{end}}
-								<div class="form-grid">
-									<label class="field">
-										<span class="field-label">Device model</span>
-										<select class="input" name="device_model_id" required {{if not .DeviceModels}}disabled{{end}}>
-											{{range .DeviceModels}}
-												<option value="{{.ID}}">{{.Name}}</option>
-											{{else}}
-												<option>No device models available</option>
-											{{end}}
-										</select>
-									</label>
-									<label class="field">
-										<span class="field-label">Version</span>
-										<input class="input" name="version" placeholder="1.2.3" required>
-									</label>
-									<label class="field field-wide">
-										<span class="field-label">Binary</span>
-										<input class="input file-input" name="artifact" type="file" required>
-									</label>
-									<label class="field field-wide">
-										<span class="field-label">SPDX SBOM</span>
-										<input class="input file-input" name="spdx_files" type="file" accept=".spdx" multiple>
-										<span class="field-help">Optional. Up to 10 .spdx files, 25 MB each, 100 MB total.</span>
-									</label>
-								</div>
-								<div class="form-actions">
-									<button class="button button-primary" type="submit" {{if not .DeviceModels}}disabled{{end}}>Create release</button>
-								</div>
-							</div>
-						</section>
-					</form>
 
 					<section class="card data-table-card">
 						<header class="card-header">
@@ -70,7 +25,14 @@
 										<th scope="col">Device model</th>
 										<th scope="col">Version</th>
 										<th scope="col">Binary</th>
-										<th scope="col">SBOM</th>
+										<th scope="col">CVE status</th>
+										<th scope="col">Active</th>
+										<th scope="col">Critical</th>
+										<th scope="col">High</th>
+										<th scope="col">Medium</th>
+										<th scope="col">Low</th>
+										<th scope="col">Other</th>
+										<th scope="col">Last scan</th>
 										<th scope="col">Size</th>
 										<th scope="col">Created</th>
 									</tr>
@@ -81,13 +43,29 @@
 											<td><a class="table-link" href="/releases/{{.ID}}?organisation_id={{.OrganisationID}}">{{.DeviceModelName}}</a></td>
 											<td class="value-mono"><a class="table-link" href="/releases/{{.ID}}?organisation_id={{.OrganisationID}}">{{.Version}}</a></td>
 											<td><a class="table-link" href="/org/{{.OrganisationID}}/releases/{{.ID}}/binary">{{.ArtifactFilename}}</a></td>
-											<td class="value-mono">{{.SBOMFileCount}} SPDX files</td>
+											<td><span class="status-pill {{.CVEStatus.StatusClass}}">{{.CVEStatus.Label}}{{if .CVEStatus.HighestLabel}} · {{.CVEStatus.HighestLabel}}{{end}}</span></td>
+											{{if .CVECounts.HasData}}
+												<td class="value-mono">{{.CVECounts.Total}}</td>
+												<td class="value-mono">{{.CVECounts.Critical}}</td>
+												<td class="value-mono">{{.CVECounts.High}}</td>
+												<td class="value-mono">{{.CVECounts.Medium}}</td>
+												<td class="value-mono">{{.CVECounts.Low}}</td>
+												<td class="value-mono">{{.CVECounts.Other}}</td>
+											{{else}}
+												<td class="value-mono muted-text">-</td>
+												<td class="value-mono muted-text">-</td>
+												<td class="value-mono muted-text">-</td>
+												<td class="value-mono muted-text">-</td>
+												<td class="value-mono muted-text">-</td>
+												<td class="value-mono muted-text">-</td>
+											{{end}}
+											<td class="value-mono">{{if .LastScanAt}}{{.LastScanAt}}{{else}}<span class="muted-text">Never</span>{{end}}</td>
 											<td class="value-mono">{{.ArtifactSizeBytes}} bytes</td>
 											<td class="value-mono">{{.CreatedAt}}</td>
 										</tr>
 									{{else}}
 										<tr>
-											<td class="empty-table-cell" colspan="6">No software releases registered yet.</td>
+											<td class="empty-table-cell" colspan="12">No software releases registered yet.</td>
 										</tr>
 									{{end}}
 								</tbody>

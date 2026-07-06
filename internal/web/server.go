@@ -112,8 +112,12 @@ type deviceDetailPageData struct {
 }
 
 type releasesPageData struct {
+	Shell    shellPageData
+	Releases []releaseView
+}
+
+type releaseCreatePageData struct {
 	Shell            shellPageData
-	Releases         []releaseView
 	DeviceModels     []deviceModelOptionView
 	ReleaseFormError string
 	ReleaseFormNote  string
@@ -132,10 +136,21 @@ type releaseDetailPageData struct {
 }
 
 type deviceModelsPageData struct {
+	Shell  shellPageData
+	Models []deviceModelView
+}
+
+type deviceModelCreatePageData struct {
 	Shell          shellPageData
-	Models         []deviceModelView
 	Releases       []releaseOptionView
 	ModelFormError string
+}
+
+type deviceModelDetailPageData struct {
+	Shell                    shellPageData
+	Model                    deviceModelView
+	Releases                 []releaseOptionView
+	ExpectedReleaseFormError string
 }
 
 type otaDeploymentsPageData struct {
@@ -236,7 +251,9 @@ type deviceTaskView struct {
 
 type releaseView struct {
 	domain.SoftwareRelease
-	SBOMFileCount int
+	CVEStatus  cveStatusView
+	CVECounts  cveSeverityCountsView
+	LastScanAt string
 }
 
 type releaseSBOMView struct {
@@ -253,6 +270,16 @@ type cveStatusView struct {
 	ActiveCount  int
 	HighestLabel string
 	Warning      string
+}
+
+type cveSeverityCountsView struct {
+	HasData  bool
+	Total    int
+	Critical int
+	High     int
+	Medium   int
+	Low      int
+	Other    int
 }
 
 type cveGroupView struct {
@@ -285,6 +312,7 @@ type releaseOptionView struct {
 	ModelName string
 	Version   string
 	Label     string
+	Selected  bool
 }
 
 type deviceModelOptionView struct {
@@ -296,10 +324,12 @@ type deviceModelOptionView struct {
 }
 
 type deviceModelView struct {
+	OrganisationID           int64
 	ID                       int64
 	Name                     string
 	ExpectedHeartbeatSeconds int64
 	ExpectedProtocol         string
+	ExpectedReleaseID        *int64
 	ExpectedReleaseLabel     string
 	CreatedAt                string
 }
@@ -364,8 +394,12 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /devices/{deviceID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.deviceTaskCancelPost)))
 	mux.Handle("POST /devices/delete", server.requireAuth(http.HandlerFunc(server.deviceDeletePost)))
 	mux.Handle("GET /device-models", server.requireAuth(http.HandlerFunc(server.deviceModels)))
+	mux.Handle("GET /device-models/new", server.requireAuth(http.HandlerFunc(server.deviceModelNew)))
+	mux.Handle("GET /device-models/{modelID}", server.requireAuth(http.HandlerFunc(server.deviceModelDetail)))
 	mux.Handle("POST /device-models", server.requireAuth(http.HandlerFunc(server.deviceModelsPost)))
+	mux.Handle("POST /device-models/{modelID}/expected-release", server.requireAuth(http.HandlerFunc(server.deviceModelExpectedReleasePost)))
 	mux.Handle("GET /releases", server.requireAuth(http.HandlerFunc(server.releases)))
+	mux.Handle("GET /releases/new", server.requireAuth(http.HandlerFunc(server.releaseNew)))
 	mux.Handle("POST /releases", server.requireAuth(http.HandlerFunc(server.releasesPost)))
 	mux.Handle("GET /releases/{releaseID}", server.requireAuth(http.HandlerFunc(server.releaseDetail)))
 	mux.Handle("GET /releases/{releaseID}/cves", server.requireAuth(http.HandlerFunc(server.releaseCVEState)))
@@ -959,12 +993,59 @@ func (s *Server) deviceModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.loadDeviceModelsPageData(r.Context(), shell, organisationID, "")
+	data, err := s.loadDeviceModelsPageData(r.Context(), shell, organisationID)
 	if err != nil {
 		http.Error(w, "device model query error", http.StatusInternalServerError)
 		return
 	}
 	s.renderDeviceModels(w, data)
+}
+
+func (s *Server) deviceModelNew(w http.ResponseWriter, r *http.Request) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	data, err := s.loadDeviceModelCreatePageData(r.Context(), shell, organisationID, "")
+	if err != nil {
+		http.Error(w, "release query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderDeviceModelNew(w, data)
+}
+
+func (s *Server) deviceModelDetail(w http.ResponseWriter, r *http.Request) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	modelID, err := strconv.ParseInt(r.PathValue("modelID"), 10, 64)
+	if err != nil || modelID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	data, err := s.loadDeviceModelDetailPageData(r.Context(), shell, organisationID, modelID, "")
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderDeviceModelDetail(w, data)
 }
 
 func (s *Server) deviceModelsPost(w http.ResponseWriter, r *http.Request) {
@@ -987,7 +1068,7 @@ func (s *Server) deviceModelsPost(w http.ResponseWriter, r *http.Request) {
 	expectedProtocol := strings.TrimSpace(r.FormValue("expected_protocol"))
 	expectedHeartbeatSeconds, err := strconv.ParseInt(r.FormValue("expected_heartbeat_seconds"), 10, 64)
 	if name == "" || expectedProtocol == "" || expectedHeartbeatSeconds <= 0 || err != nil {
-		s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "Name, heartbeat, and protocol are required.")
+		s.renderDeviceModelNewForOrganisationWithError(w, r, shell, organisationID, "Name, heartbeat, and protocol are required.")
 		return
 	}
 
@@ -996,11 +1077,11 @@ func (s *Server) deviceModelsPost(w http.ResponseWriter, r *http.Request) {
 	if releaseValue != "" {
 		releaseID, err := strconv.ParseInt(releaseValue, 10, 64)
 		if err != nil || releaseID <= 0 {
-			s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "Choose a valid expected release.")
+			s.renderDeviceModelNewForOrganisationWithError(w, r, shell, organisationID, "Choose a valid expected release.")
 			return
 		}
 		if _, err := s.store.SoftwareRelease(r.Context(), releaseID, organisationID); errors.Is(err, db.ErrNotFound) {
-			s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "Choose a release from this organisation.")
+			s.renderDeviceModelNewForOrganisationWithError(w, r, shell, organisationID, "Choose a release from this organisation.")
 			return
 		} else if err != nil {
 			http.Error(w, "release query error", http.StatusInternalServerError)
@@ -1017,7 +1098,7 @@ func (s *Server) deviceModelsPost(w http.ResponseWriter, r *http.Request) {
 		ExpectedReleaseID:        expectedReleaseID,
 	})
 	if errors.Is(err, db.ErrConflict) {
-		s.renderDeviceModelsForOrganisationWithError(w, r, shell, organisationID, "A device model with this name already exists.")
+		s.renderDeviceModelNewForOrganisationWithError(w, r, shell, organisationID, "A device model with this name already exists.")
 		return
 	}
 	if err != nil {
@@ -1026,6 +1107,63 @@ func (s *Server) deviceModelsPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/device-models?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) deviceModelExpectedReleasePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.Error(w, "missing organisation id", http.StatusBadRequest)
+		return
+	}
+	modelID, err := strconv.ParseInt(r.PathValue("modelID"), 10, 64)
+	if err != nil || modelID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.DeviceModel(r.Context(), modelID, organisationID); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+
+	var expectedReleaseID *int64
+	releaseValue := strings.TrimSpace(r.FormValue("expected_release_id"))
+	if releaseValue != "" {
+		releaseID, err := strconv.ParseInt(releaseValue, 10, 64)
+		if err != nil || releaseID <= 0 {
+			s.renderDeviceModelDetailForOrganisationWithError(w, r, shell, organisationID, modelID, "Choose a valid expected release.")
+			return
+		}
+		if _, err := s.store.SoftwareRelease(r.Context(), releaseID, organisationID); errors.Is(err, db.ErrNotFound) {
+			s.renderDeviceModelDetailForOrganisationWithError(w, r, shell, organisationID, modelID, "Choose a release from this organisation.")
+			return
+		} else if err != nil {
+			http.Error(w, "release query error", http.StatusInternalServerError)
+			return
+		}
+		expectedReleaseID = &releaseID
+	}
+
+	if err := s.store.UpdateDeviceModelExpectedRelease(r.Context(), organisationID, modelID, expectedReleaseID); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "device model update error", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, deviceModelDetailURL(modelID, organisationID), http.StatusSeeOther)
 }
 
 func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
@@ -1045,22 +1183,29 @@ func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "release query error", http.StatusInternalServerError)
 		return
 	}
-	models, err := s.deviceModelOptions(r.Context(), organisationID)
+	s.renderReleases(w, releasesPageData{
+		Shell:    shell,
+		Releases: releases,
+	})
+}
+
+func (s *Server) releaseNew(w http.ResponseWriter, r *http.Request) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	data, err := s.loadReleaseCreatePageData(r.Context(), shell, organisationID, "")
 	if err != nil {
 		http.Error(w, "device model query error", http.StatusInternalServerError)
 		return
 	}
-
-	note := ""
-	if len(models) == 0 {
-		note = "Create a device model before creating releases."
-	}
-	s.renderReleases(w, releasesPageData{
-		Shell:           shell,
-		Releases:        releases,
-		DeviceModels:    models,
-		ReleaseFormNote: note,
-	})
+	s.renderReleaseNew(w, data)
 }
 
 func (s *Server) releasesPost(w http.ResponseWriter, r *http.Request) {
@@ -1087,11 +1232,11 @@ func (s *Server) releasesPost(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceModelID, err := strconv.ParseInt(r.FormValue("device_model_id"), 10, 64)
 	if err != nil || deviceModelID <= 0 {
-		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, "Choose a device model.")
+		s.renderReleaseNewForOrganisationWithError(w, r, shell, organisationID, "Choose a device model.")
 		return
 	}
 	if _, err := s.store.DeviceModel(r.Context(), deviceModelID, organisationID); errors.Is(err, db.ErrNotFound) {
-		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, "Choose a device model from this organisation.")
+		s.renderReleaseNewForOrganisationWithError(w, r, shell, organisationID, "Choose a device model from this organisation.")
 		return
 	} else if err != nil {
 		http.Error(w, "device model query error", http.StatusInternalServerError)
@@ -1100,13 +1245,13 @@ func (s *Server) releasesPost(w http.ResponseWriter, r *http.Request) {
 
 	artifact, cleanup, err := s.saveReleaseArtifact(r, organisationID)
 	if err != nil {
-		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, err.Error())
+		s.renderReleaseNewForOrganisationWithError(w, r, shell, organisationID, err.Error())
 		return
 	}
 	sbom, sbomCleanup, err := s.saveReleaseSBOMFiles(r, artifact.Path)
 	if err != nil {
 		cleanup()
-		s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, err.Error())
+		s.renderReleaseNewForOrganisationWithError(w, r, shell, organisationID, err.Error())
 		return
 	}
 	committed := false
@@ -1128,7 +1273,7 @@ func (s *Server) releasesPost(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrConflict) {
-			s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, "A release already exists for this device model and version.")
+			s.renderReleaseNewForOrganisationWithError(w, r, shell, organisationID, "A release already exists for this device model and version.")
 			return
 		}
 		http.Error(w, "release create error", http.StatusInternalServerError)
@@ -1708,16 +1853,34 @@ func (s *Server) releaseViews(ctx context.Context, organisationID int64) ([]rele
 
 	views := make([]releaseView, 0, len(releases))
 	for _, release := range releases {
-		sbom, err := s.store.CurrentReleaseSBOM(ctx, organisationID, release.ID)
-		if errors.Is(err, db.ErrNotFound) {
-			err = nil
-		}
+		status, err := s.store.ReleaseCVEImpactStatus(ctx, organisationID, release.ID)
 		if err != nil {
 			return nil, err
 		}
+		scanRuns, err := s.store.ListCVEScanRuns(ctx, organisationID, release.ID)
+		if err != nil {
+			return nil, err
+		}
+		lastScanAt := ""
+		if len(scanRuns) > 0 {
+			lastScanAt = cveScanRunDisplayTime(scanRuns[0])
+		}
+		var counts cveSeverityCountsView
+		if status.LatestSuccessfulScanID > 0 {
+			activeFindings, err := s.store.ListActiveCVEFindings(ctx, organisationID, release.ID)
+			if errors.Is(err, db.ErrNotFound) {
+				activeFindings = nil
+			} else if err != nil {
+				return nil, err
+			}
+			counts = cveSeverityCounts(activeFindings)
+			counts.HasData = true
+		}
 		views = append(views, releaseView{
 			SoftwareRelease: release,
-			SBOMFileCount:   sbom.FileCount,
+			CVEStatus:       cveStatusViewFor(status),
+			CVECounts:       counts,
+			LastScanAt:      lastScanAt,
 		})
 	}
 	return views, nil
@@ -2124,7 +2287,7 @@ func (s *Server) renderReleasesWithError(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	s.renderReleasesForOrganisationWithError(w, r, shell, organisationID, message)
+	s.renderReleaseNewForOrganisationWithError(w, r, shell, organisationID, message)
 }
 
 func (s *Server) renderReleaseDetailMutationError(w http.ResponseWriter, r *http.Request, replaceError string, rescanError string) {
@@ -2148,39 +2311,35 @@ func (s *Server) renderReleaseDetailForOrganisationWithError(w http.ResponseWrit
 	s.renderReleaseDetail(w, data)
 }
 
-func (s *Server) renderReleasesForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, message string) {
-	shell.SelectedOrganisationID = organisationID
-	releases, err := s.releaseViews(r.Context(), organisationID)
+func (s *Server) renderReleaseNewForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, message string) {
+	data, err := s.loadReleaseCreatePageData(r.Context(), shell, organisationID, message)
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+	s.renderReleaseNew(w, data)
+}
+
+func (s *Server) renderDeviceModelNewForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, message string) {
+	data, err := s.loadDeviceModelCreatePageData(r.Context(), shell, organisationID, message)
 	if err != nil {
 		http.Error(w, "release query error", http.StatusInternalServerError)
 		return
 	}
-	models, err := s.deviceModelOptions(r.Context(), organisationID)
-	if err != nil {
-		http.Error(w, "device model query error", http.StatusInternalServerError)
-		return
-	}
-
-	note := ""
-	if len(models) == 0 {
-		note = "Create a device model before creating releases."
-	}
-	s.renderReleases(w, releasesPageData{
-		Shell:            shell,
-		Releases:         releases,
-		DeviceModels:     models,
-		ReleaseFormError: message,
-		ReleaseFormNote:  note,
-	})
+	s.renderDeviceModelNew(w, data)
 }
 
-func (s *Server) renderDeviceModelsForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, message string) {
-	data, err := s.loadDeviceModelsPageData(r.Context(), shell, organisationID, message)
+func (s *Server) renderDeviceModelDetailForOrganisationWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, modelID int64, message string) {
+	data, err := s.loadDeviceModelDetailPageData(r.Context(), shell, organisationID, modelID, message)
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
 	if err != nil {
 		http.Error(w, "device model query error", http.StatusInternalServerError)
 		return
 	}
-	s.renderDeviceModels(w, data)
+	s.renderDeviceModelDetail(w, data)
 }
 
 func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, data devicesPageData) {
@@ -2225,6 +2384,13 @@ func (s *Server) renderReleases(w http.ResponseWriter, data releasesPageData) {
 	}
 }
 
+func (s *Server) renderReleaseNew(w http.ResponseWriter, data releaseCreatePageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "release_new.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
 func (s *Server) renderReleaseDetail(w http.ResponseWriter, data releaseDetailPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "release_detail.html", data); err != nil {
@@ -2242,6 +2408,20 @@ func (s *Server) renderReleaseCVEState(w http.ResponseWriter, data releaseDetail
 func (s *Server) renderDeviceModels(w http.ResponseWriter, data deviceModelsPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "device_models.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderDeviceModelNew(w http.ResponseWriter, data deviceModelCreatePageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "device_model_new.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderDeviceModelDetail(w http.ResponseWriter, data deviceModelDetailPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "device_model_detail.html", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
@@ -2404,7 +2584,7 @@ func (s *Server) deviceModelOptions(ctx context.Context, organisationID int64) (
 	return modelOptions, nil
 }
 
-func (s *Server) loadDeviceModelsPageData(ctx context.Context, shell shellPageData, organisationID int64, formError string) (deviceModelsPageData, error) {
+func (s *Server) loadDeviceModelsPageData(ctx context.Context, shell shellPageData, organisationID int64) (deviceModelsPageData, error) {
 	shell.SelectedOrganisationID = organisationID
 	models, err := s.store.ListDeviceModels(ctx, organisationID)
 	if err != nil {
@@ -2412,24 +2592,66 @@ func (s *Server) loadDeviceModelsPageData(ctx context.Context, shell shellPageDa
 	}
 	modelViews := make([]deviceModelView, 0, len(models))
 	for _, model := range models {
-		modelViews = append(modelViews, deviceModelView{
-			ID:                       model.ID,
-			Name:                     model.Name,
-			ExpectedHeartbeatSeconds: model.ExpectedHeartbeatSeconds,
-			ExpectedProtocol:         model.ExpectedProtocol,
-			ExpectedReleaseLabel:     expectedReleaseLabel(model),
-			CreatedAt:                model.CreatedAt,
-		})
+		modelViews = append(modelViews, deviceModelViewFor(model))
+	}
+	return deviceModelsPageData{
+		Shell:  shell,
+		Models: modelViews,
+	}, nil
+}
+
+func (s *Server) loadDeviceModelCreatePageData(ctx context.Context, shell shellPageData, organisationID int64, formError string) (deviceModelCreatePageData, error) {
+	shell.SelectedOrganisationID = organisationID
+	releases, err := s.loadReleaseOptions(ctx, organisationID)
+	if err != nil {
+		return deviceModelCreatePageData{}, err
+	}
+	return deviceModelCreatePageData{
+		Shell:          shell,
+		Releases:       releases,
+		ModelFormError: formError,
+	}, nil
+}
+
+func (s *Server) loadDeviceModelDetailPageData(ctx context.Context, shell shellPageData, organisationID int64, modelID int64, formError string) (deviceModelDetailPageData, error) {
+	shell.SelectedOrganisationID = organisationID
+	model, err := s.store.DeviceModel(ctx, modelID, organisationID)
+	if err != nil {
+		return deviceModelDetailPageData{}, err
 	}
 	releases, err := s.loadReleaseOptions(ctx, organisationID)
 	if err != nil {
-		return deviceModelsPageData{}, err
+		return deviceModelDetailPageData{}, err
 	}
-	return deviceModelsPageData{
-		Shell:          shell,
-		Models:         modelViews,
-		Releases:       releases,
-		ModelFormError: formError,
+	if model.ExpectedReleaseID != nil {
+		for i := range releases {
+			releases[i].Selected = releases[i].ID == *model.ExpectedReleaseID
+		}
+	}
+	return deviceModelDetailPageData{
+		Shell:                    shell,
+		Model:                    deviceModelViewFor(model),
+		Releases:                 releases,
+		ExpectedReleaseFormError: formError,
+	}, nil
+}
+
+func (s *Server) loadReleaseCreatePageData(ctx context.Context, shell shellPageData, organisationID int64, formError string) (releaseCreatePageData, error) {
+	shell.SelectedOrganisationID = organisationID
+	models, err := s.deviceModelOptions(ctx, organisationID)
+	if err != nil {
+		return releaseCreatePageData{}, err
+	}
+
+	note := ""
+	if len(models) == 0 {
+		note = "Create a device model before creating releases."
+	}
+	return releaseCreatePageData{
+		Shell:            shell,
+		DeviceModels:     models,
+		ReleaseFormError: formError,
+		ReleaseFormNote:  note,
 	}, nil
 }
 
@@ -2657,6 +2879,19 @@ func deviceModelOption(model domain.DeviceModel) deviceModelOptionView {
 	}
 }
 
+func deviceModelViewFor(model domain.DeviceModel) deviceModelView {
+	return deviceModelView{
+		OrganisationID:           model.OrganisationID,
+		ID:                       model.ID,
+		Name:                     model.Name,
+		ExpectedHeartbeatSeconds: model.ExpectedHeartbeatSeconds,
+		ExpectedProtocol:         model.ExpectedProtocol,
+		ExpectedReleaseID:        model.ExpectedReleaseID,
+		ExpectedReleaseLabel:     expectedReleaseLabel(model),
+		CreatedAt:                model.CreatedAt,
+	}
+}
+
 func expectedReleaseLabel(model domain.DeviceModel) string {
 	if model.ExpectedReleaseID == nil {
 		return ""
@@ -2741,6 +2976,16 @@ func cveScanRunStatusClass(status string) string {
 	default:
 		return "status-neutral"
 	}
+}
+
+func cveScanRunDisplayTime(run domain.CVEScanRun) string {
+	if run.FinishedAt != "" {
+		return run.FinishedAt
+	}
+	if run.StartedAt != "" {
+		return run.StartedAt
+	}
+	return run.CreatedAt
 }
 
 func groupedCVEFindings(findings []domain.CVEScanFinding, waivers []domain.ReleaseCVEWaiver) ([]cveGroupView, []cveGroupView) {
@@ -2867,6 +3112,34 @@ func cveSeverityClass(severity string) string {
 	}
 }
 
+func cveSeverityCounts(findings []domain.CVEScanFinding) cveSeverityCountsView {
+	byCVE := make(map[string]string, len(findings))
+	for _, finding := range findings {
+		cveID := strings.TrimSpace(finding.CVEID)
+		if cveID == "" {
+			continue
+		}
+		byCVE[cveID] = higherCVESeverity(byCVE[cveID], finding.Severity)
+	}
+
+	counts := cveSeverityCountsView{Total: len(byCVE)}
+	for _, severity := range byCVE {
+		switch normalizedCVESeverity(severity) {
+		case "critical":
+			counts.Critical++
+		case "high":
+			counts.High++
+		case "medium":
+			counts.Medium++
+		case "low":
+			counts.Low++
+		default:
+			counts.Other++
+		}
+	}
+	return counts
+}
+
 func cveDetailURL(cveID string) string {
 	return "https://nvd.nist.gov/vuln/detail/" + strings.TrimSpace(cveID)
 }
@@ -2890,6 +3163,10 @@ func releaseBinaryURLPath(releaseID int64, organisationID int64) string {
 
 func releaseDetailURL(releaseID int64, organisationID int64) string {
 	return "/releases/" + strconv.FormatInt(releaseID, 10) + "?organisation_id=" + strconv.FormatInt(organisationID, 10)
+}
+
+func deviceModelDetailURL(modelID int64, organisationID int64) string {
+	return "/device-models/" + strconv.FormatInt(modelID, 10) + "?organisation_id=" + strconv.FormatInt(organisationID, 10)
 }
 
 func (s *Server) fotaDownloadURL(releaseID int64, organisationID int64) string {

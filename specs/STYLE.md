@@ -484,7 +484,59 @@ The top bar hosts global controls. It should remain compact and not duplicate or
 }
 ```
 
-## 11. Cards
+## 11. Page Types
+
+Every workspace route should have one primary job. Do not combine a creation form, a list, and a detail surface on the same page just because they share a domain object. Prefer predictable page types and explicit navigation between them.
+
+Allowed primary page types:
+
+- `List`: shows a searchable/scannable collection, summary metrics when useful, row actions, and a primary create button in the page header.
+- `Create form`: captures a new object. It should be reached from the list page primary action and should include a back link to the list.
+- `Detail`: shows one existing object, its related state, and object-scoped actions. It may include small contextual forms for actions that are inseparable from the object state.
+- `Edit/settings form`: updates an existing object or configuration. It should be reached from a detail or settings page action unless the entire page is dedicated to settings.
+- `Authentication/onboarding`: login, invitation signup, and similar flows can be standalone forms outside the app workspace pattern.
+
+Primary page rules:
+
+- A list page must not embed a creation form above or beside the list. Put a `Create ...` button in `.page-actions` and route to `/resource/new`.
+- A create page must not include the full collection list. It may show concise help, validation errors, and dependency warnings.
+- A detail page may contain object-scoped operational forms, such as launching a device task, rescanning a release, replacing a release SBOM, or dismissing a specific CVE. These are not collection creation forms.
+- Destructive row actions are allowed in tables when the action is local to the row and does not require a long form.
+- Settings pages should avoid mixing unrelated settings forms with member or inventory lists. Split them into detail/settings subpages or use clearly scoped actions from the list/detail page.
+- Empty list pages should still preserve the list page structure and offer the create action in the header or empty state, not an always-visible creation form.
+
+Canonical route shape:
+
+```text
+/devices                 list
+/devices/new             create form
+/devices/{deviceID}      detail
+
+/releases                list
+/releases/new            create form
+/releases/{releaseID}    detail
+
+/device-models           list
+/device-models/new       create form
+/device-models/{id}      detail or edit/settings, when needed
+```
+
+Examples:
+
+- The Devices page is the target pattern: it lists devices, exposes a `Create device` button, and sends users to a dedicated create form and device detail page.
+- The Releases page should follow the same shape: list releases first, use `Create release` to open a dedicated upload form, and keep release CVE/SBOM operations on release detail.
+- Device Models should be split into a list page plus a dedicated create form.
+- Organisation membership should be treated as a list/detail/settings area. Rename and invite forms should not sit above member tables on the same default list surface.
+
+Review checklist for new pages:
+
+- Can the page be named as exactly one primary type?
+- If the page contains a collection list, is the creation flow behind a button/link?
+- If the page contains a create form, is it free of unrelated collection tables?
+- If the page contains a detail view, are forms scoped to the current object?
+- Are the primary and secondary actions in `.page-actions` predictable for that page type?
+
+## 12. Cards
 
 ```css
 .card {
@@ -503,7 +555,7 @@ The top bar hosts global controls. It should remain compact and not duplicate or
 }
 ```
 
-## 12. KPI Cards
+## 13. KPI Cards
 
 ```css
 .kpi-card {
@@ -525,7 +577,7 @@ The top bar hosts global controls. It should remain compact and not duplicate or
 }
 ```
 
-## 13. Buttons
+## 14. Buttons
 
 ```css
 .button {
@@ -550,7 +602,7 @@ The top bar hosts global controls. It should remain compact and not duplicate or
 }
 ```
 
-## 14. Status Pills
+## 15. Status Pills
 
 ```css
 .status-pill {
@@ -568,7 +620,7 @@ The top bar hosts global controls. It should remain compact and not duplicate or
 
 Use explicit labels. Do not communicate state through color alone.
 
-## 15. Tables
+## 16. Tables
 
 ```css
 .data-table-card {
@@ -596,7 +648,7 @@ For dense technical values:
 }
 ```
 
-## 16. Detail Drawer
+## 17. Detail Drawer
 
 ```css
 .detail-drawer {
@@ -607,12 +659,25 @@ For dense technical values:
 }
 ```
 
-## 17. Forms
+## 18. Forms
 
 ```css
 .field {
   display: grid;
   gap: 6px;
+}
+
+.card-body > form {
+  display: grid;
+  gap: 14px;
+}
+
+.card-body > .form-actions {
+  margin-top: 14px;
+}
+
+.card-body > .field + .field {
+  margin-top: 14px;
 }
 
 .field-label {
@@ -634,11 +699,13 @@ For dense technical values:
 }
 ```
 
-## 18. Charts
+Card forms must have visible vertical rhythm between controls and actions. A submit/action row must not touch the previous combobox, input, textarea, file input, or help text; use the shared `.form-actions` spacing and the `.card-body > form` grid gap instead of one-off margins in templates.
+
+## 19. Charts
 
 Charts should inherit theme colors through CSS variables. Use Zomp for healthy/success trends, Amaranth for failures or high-priority events, Ice for neutral information, and Vanilla for warnings.
 
-## 19. Empty States
+## 20. Empty States
 
 ```css
 .empty-state {
@@ -655,7 +722,7 @@ Charts should inherit theme colors through CSS variables. Use Zomp for healthy/s
 
 The Clunky mascot can be used in empty states, onboarding, or help contexts. Avoid mascot usage in critical error states.
 
-## 20. Motion
+## 21. Motion
 
 Use short, functional transitions.
 
@@ -683,7 +750,21 @@ Respect reduced motion:
 }
 ```
 
-## 21. Accessibility
+## 22. Date And Time
+
+All persisted dates and timestamps must be stored in UTC. Server-side domain objects, database rows, scan results, telemetry event times, and API payload timestamps should use UTC values as the canonical representation.
+
+The web UI must display dates and times in the user's browser locale and timezone. Prefer rendering a machine-readable UTC timestamp in markup, then formatting it client-side with `Intl.DateTimeFormat` or an equivalent browser API. Do not hard-code server-local timezone assumptions into templates.
+
+Rules:
+
+- Store and compare timestamps in UTC.
+- Treat UTC as the API and database boundary format.
+- Display timestamps using the browser locale/timezone.
+- Preserve precise machine-readable values in attributes such as `datetime` or `data-timestamp` when client-side formatting is used.
+- Avoid ambiguous date-only text for operational events; include time when recency, ordering, scans, telemetry, or deployments are involved.
+
+## 23. Accessibility
 
 Minimum implementation requirements:
 
@@ -705,7 +786,7 @@ Rules:
 - Theme choice should persist across sessions.
 - Text contrast must meet WCAG AA in both themes.
 
-## 22. Naming Conventions
+## 24. Naming Conventions
 
 Use generic, product-stable class names.
 
@@ -729,7 +810,7 @@ Recommended:
 
 Avoid product-specific names in base UI primitives. Product-specific classes can be added later at feature level.
 
-## 23. Component Checklist
+## 25. Component Checklist
 
 Initial implementation should include:
 

@@ -130,6 +130,31 @@ func (s *Store) DeviceModel(ctx context.Context, modelID int64, organisationID i
 	return model, err
 }
 
+func (s *Store) UpdateDeviceModelExpectedRelease(ctx context.Context, organisationID int64, modelID int64, expectedReleaseID *int64) error {
+	var releaseID any
+	if expectedReleaseID != nil {
+		if _, err := s.SoftwareRelease(ctx, *expectedReleaseID, organisationID); err != nil {
+			return err
+		}
+		releaseID = *expectedReleaseID
+	}
+
+	query := `
+		UPDATE device_models
+		SET expected_release_id = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE organisation_id = ? AND id = ?
+	`
+	args := []any{releaseID, organisationID, modelID}
+	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
+		query = `
+			UPDATE device_models
+			SET expected_release_id = $1, updated_at = NOW()
+			WHERE organisation_id = $2 AND id = $3
+		`
+	}
+	return s.execOne(ctx, query, args...)
+}
+
 type deviceModelScanner interface {
 	Scan(dest ...any) error
 }

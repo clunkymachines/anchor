@@ -299,6 +299,88 @@ func TestDeviceModelsPostCreatesModelWithExpectedRelease(t *testing.T) {
 	if createdModel.ExpectedReleaseID == nil || *createdModel.ExpectedReleaseID != releaseID || createdModel.ExpectedReleaseVersion != "1.2.3" {
 		t.Fatalf("unexpected expected release on model: %#v", createdModel)
 	}
+
+	server = testServerWithTemplates(t, store)
+	user := domain.User{ID: userID, Email: "member@example.com"}
+	listReq := httptest.NewRequest(http.MethodGet, "/device-models?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), userContextKey, user))
+	listRes := httptest.NewRecorder()
+	server.deviceModels(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected device models page, got %d body=%q", listRes.Code, listRes.Body.String())
+	}
+	listBody := listRes.Body.String()
+	if !strings.Contains(listBody, `href="/device-models/new?organisation_id=`+strconv.FormatInt(organisationID, 10)+`"`) {
+		t.Fatalf("expected device model list to link to create page, got %q", listBody)
+	}
+	if !strings.Contains(listBody, `href="/device-models/`+strconv.FormatInt(createdModel.ID, 10)+`?organisation_id=`+strconv.FormatInt(organisationID, 10)+`"`) {
+		t.Fatalf("expected device model list to link to detail page, got %q", listBody)
+	}
+	if strings.Contains(listBody, `method="post" action="/device-models"`) || strings.Contains(listBody, `name="expected_heartbeat_seconds"`) {
+		t.Fatalf("expected device model list to be list-only, got %q", listBody)
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/device-models/new?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	newReq = newReq.WithContext(context.WithValue(newReq.Context(), userContextKey, user))
+	newRes := httptest.NewRecorder()
+	server.deviceModelNew(newRes, newReq)
+	if newRes.Code != http.StatusOK {
+		t.Fatalf("expected device model create page, got %d body=%q", newRes.Code, newRes.Body.String())
+	}
+	newBody := newRes.Body.String()
+	for _, expected := range []string{
+		"Create device model",
+		`method="post" action="/device-models"`,
+		`name="expected_heartbeat_seconds"`,
+		`name="expected_protocol"`,
+		`name="expected_release_id"`,
+		"Back to models",
+	} {
+		if !strings.Contains(newBody, expected) {
+			t.Fatalf("expected device model create page to contain %q, got %q", expected, newBody)
+		}
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/device-models/"+strconv.FormatInt(createdModel.ID, 10)+"?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	detailReq.SetPathValue("modelID", strconv.FormatInt(createdModel.ID, 10))
+	detailReq = detailReq.WithContext(context.WithValue(detailReq.Context(), userContextKey, user))
+	detailRes := httptest.NewRecorder()
+	server.deviceModelDetail(detailRes, detailReq)
+	if detailRes.Code != http.StatusOK {
+		t.Fatalf("expected device model detail page, got %d body=%q", detailRes.Code, detailRes.Body.String())
+	}
+	detailBody := detailRes.Body.String()
+	for _, expected := range []string{
+		"Gateway v1",
+		"Expected release",
+		`method="post" action="/device-models/` + strconv.FormatInt(createdModel.ID, 10) + `/expected-release"`,
+		`option value="` + strconv.FormatInt(releaseID, 10) + `" selected`,
+	} {
+		if !strings.Contains(detailBody, expected) {
+			t.Fatalf("expected device model detail page to contain %q, got %q", expected, detailBody)
+		}
+	}
+
+	clearReq := formRequest(http.MethodPost, "/device-models/"+strconv.FormatInt(createdModel.ID, 10)+"/expected-release", url.Values{
+		"organisation_id":     {strconv.FormatInt(organisationID, 10)},
+		"expected_release_id": {""},
+	}, user)
+	clearReq.SetPathValue("modelID", strconv.FormatInt(createdModel.ID, 10))
+	clearRes := httptest.NewRecorder()
+	server.deviceModelExpectedReleasePost(clearRes, clearReq)
+	if clearRes.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after expected release clear, got %d body=%q", clearRes.Code, clearRes.Body.String())
+	}
+	if location := clearRes.Header().Get("Location"); location != "/device-models/"+strconv.FormatInt(createdModel.ID, 10)+"?organisation_id="+strconv.FormatInt(organisationID, 10) {
+		t.Fatalf("unexpected expected release redirect location %q", location)
+	}
+	updatedModel, err := store.DeviceModel(ctx, createdModel.ID, organisationID)
+	if err != nil {
+		t.Fatalf("load updated device model: %v", err)
+	}
+	if updatedModel.ExpectedReleaseID != nil || updatedModel.ExpectedReleaseVersion != "" {
+		t.Fatalf("expected release to be cleared, got %#v", updatedModel)
+	}
 }
 
 func TestDevicesPostCreatesDeviceWithSelectedModel(t *testing.T) {
@@ -1057,6 +1139,30 @@ func TestReleaseUploadStoresSPDXFilesAndShowsAggregateCount(t *testing.T) {
 	if len(scanRuns) != 1 || scanRuns[0].Status != "pending" || scanRuns[0].Trigger != "auto" {
 		t.Fatalf("expected auto-enqueued pending scan, got %#v", scanRuns)
 	}
+	if err := store.CompleteCVEScanRun(ctx, organisationID, scanRuns[0].ID, "2026-06-29T10:01:00Z", []domain.CVEScanFinding{
+		{CVEID: "CVE-2026-0001", Severity: "critical", PackageName: "lib-a", InstalledVersion: "1.0.0"},
+		{CVEID: "CVE-2026-0001", Severity: "high", PackageName: "lib-b", InstalledVersion: "2.0.0"},
+		{CVEID: "CVE-2026-0002", Severity: "high", PackageName: "lib-c", InstalledVersion: "3.0.0"},
+		{CVEID: "CVE-2026-0003", Severity: "medium", PackageName: "lib-d", InstalledVersion: "4.0.0"},
+		{CVEID: "CVE-2026-0004", Severity: "low", PackageName: "lib-e", InstalledVersion: "5.0.0"},
+		{CVEID: "CVE-2026-0005", Severity: "unknown", PackageName: "lib-f", InstalledVersion: "6.0.0"},
+	}); err != nil {
+		t.Fatalf("complete cve scan: %v", err)
+	}
+	releaseViews, err := server.releaseViews(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("release views: %v", err)
+	}
+	if len(releaseViews) != 1 {
+		t.Fatalf("expected one release view, got %#v", releaseViews)
+	}
+	counts := releaseViews[0].CVECounts
+	if !counts.HasData || counts.Total != 5 || counts.Critical != 1 || counts.High != 1 || counts.Medium != 1 || counts.Low != 1 || counts.Other != 1 {
+		t.Fatalf("unexpected cve severity counts: %#v", counts)
+	}
+	if releaseViews[0].LastScanAt != "2026-06-29T10:01:00Z" {
+		t.Fatalf("unexpected last scan time: %#v", releaseViews[0].LastScanAt)
+	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/releases?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
 	listReq = listReq.WithContext(context.WithValue(listReq.Context(), userContextKey, user))
@@ -1066,11 +1172,43 @@ func TestReleaseUploadStoresSPDXFilesAndShowsAggregateCount(t *testing.T) {
 		t.Fatalf("expected releases page, got %d body=%q", listRes.Code, listRes.Body.String())
 	}
 	bodyText := listRes.Body.String()
-	if !strings.Contains(bodyText, "2 SPDX files") {
-		t.Fatalf("expected aggregate sbom count in release list, got %q", bodyText)
+	if !strings.Contains(bodyText, `href="/releases/new?organisation_id=`+strconv.FormatInt(organisationID, 10)+`"`) {
+		t.Fatalf("expected release list to link to create page, got %q", bodyText)
+	}
+	if strings.Contains(bodyText, `enctype="multipart/form-data"`) || strings.Contains(bodyText, `name="artifact"`) {
+		t.Fatalf("expected release list to be list-only, got %q", bodyText)
+	}
+	if strings.Contains(bodyText, "SPDX files") || strings.Contains(bodyText, ">SBOM<") {
+		t.Fatalf("expected release list not to show SBOM column, got %q", bodyText)
+	}
+	for _, expected := range []string{"CVE status", "Critical", "High", "Medium", "Low", "Other", "Last scan", "2026-06-29T10:01:00Z", "Impacted · Critical"} {
+		if !strings.Contains(bodyText, expected) {
+			t.Fatalf("expected release list to contain %q, got %q", expected, bodyText)
+		}
 	}
 	if strings.Contains(bodyText, "app.spdx") || strings.Contains(bodyText, "build.spdx") {
 		t.Fatalf("expected release list not to show individual SPDX filenames, got %q", bodyText)
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/releases/new?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	newReq = newReq.WithContext(context.WithValue(newReq.Context(), userContextKey, user))
+	newRes := httptest.NewRecorder()
+	server.releaseNew(newRes, newReq)
+	if newRes.Code != http.StatusOK {
+		t.Fatalf("expected release create page, got %d body=%q", newRes.Code, newRes.Body.String())
+	}
+	newBody := newRes.Body.String()
+	for _, expected := range []string{
+		"Create release",
+		`method="post" action="/releases"`,
+		`name="device_model_id"`,
+		`name="artifact"`,
+		`name="spdx_files"`,
+		"Back to releases",
+	} {
+		if !strings.Contains(newBody, expected) {
+			t.Fatalf("expected release create page to contain %q, got %q", expected, newBody)
+		}
 	}
 }
 

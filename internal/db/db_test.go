@@ -621,6 +621,65 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	}
 }
 
+func TestUpdateDeviceModelExpectedRelease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, Config{
+		Dialect: DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID := testOrganisationID(t, store)
+	otherOrganisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: t.Name() + " other"})
+	if err != nil {
+		t.Fatalf("create other organisation: %v", err)
+	}
+	modelID := testDeviceModelID(t, store, organisationID, "Gateway")
+	releaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       modelID,
+		Version:             "1.2.3",
+		ArtifactPath:        "1/firmware.bin",
+		ArtifactFilename:    "firmware.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("create software release: %v", err)
+	}
+
+	if err := store.UpdateDeviceModelExpectedRelease(ctx, organisationID, modelID, &releaseID); err != nil {
+		t.Fatalf("update expected release: %v", err)
+	}
+	model, err := store.DeviceModel(ctx, modelID, organisationID)
+	if err != nil {
+		t.Fatalf("load device model: %v", err)
+	}
+	if model.ExpectedReleaseID == nil || *model.ExpectedReleaseID != releaseID || model.ExpectedReleaseModelName != "Gateway" || model.ExpectedReleaseVersion != "1.2.3" {
+		t.Fatalf("unexpected expected release after update: %#v", model)
+	}
+
+	if err := store.UpdateDeviceModelExpectedRelease(ctx, organisationID, modelID, nil); err != nil {
+		t.Fatalf("clear expected release: %v", err)
+	}
+	model, err = store.DeviceModel(ctx, modelID, organisationID)
+	if err != nil {
+		t.Fatalf("load cleared device model: %v", err)
+	}
+	if model.ExpectedReleaseID != nil || model.ExpectedReleaseModelName != "" || model.ExpectedReleaseVersion != "" {
+		t.Fatalf("expected release should be cleared: %#v", model)
+	}
+
+	if err := store.UpdateDeviceModelExpectedRelease(ctx, otherOrganisationID, modelID, &releaseID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected wrong organisation update to fail as not found, got %v", err)
+	}
+}
+
 func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	t.Parallel()
 
