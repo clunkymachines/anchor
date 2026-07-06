@@ -85,7 +85,13 @@
 													<span class="muted-text">None</span>
 												{{end}}
 											</td>
-											<td><span class="status-pill {{.StatusClass}}" title="Last seen: {{.LastSeen}}">{{.Status}}</span></td>
+											<td>
+												{{if eq .LastSeen "Never"}}
+													<span class="status-pill {{.StatusClass}}" title="Last seen: Never">{{.Status}}</span>
+												{{else}}
+													<span class="status-pill {{.StatusClass}}" title="Last seen: {{.LastSeen}}" data-local-time-title="{{.LastSeen}}" data-local-time-title-prefix="Last seen: ">{{.Status}}</span>
+												{{end}}
+											</td>
 											<td class="table-actions-cell">
 												<form method="post" action="/devices/delete">
 													<input type="hidden" name="device_id" value="{{.ID}}">

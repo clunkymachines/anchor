@@ -33,7 +33,7 @@
 											<td class="value-mono">{{.ReleaseVersion}}</td>
 											<td>{{.Target}}</td>
 											<td><span class="status-pill status-info">{{.Status}}</span></td>
-											<td class="value-mono">{{.CreatedAt}}</td>
+											<td class="value-mono">{{localTime .CreatedAt}}</td>
 										</tr>
 									{{else}}
 										<tr>

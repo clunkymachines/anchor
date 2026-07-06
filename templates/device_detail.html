@@ -61,7 +61,7 @@
 									</div>
 									<div class="key-value-row">
 										<dt class="key-value-label">Last seen</dt>
-										<dd class="key-value-value value-mono">{{.Device.LastSeen}}</dd>
+										<dd class="key-value-value value-mono">{{if eq .Device.LastSeen "Never"}}Never{{else}}{{localTime .Device.LastSeen}}{{end}}</dd>
 									</div>
 								</dl>
 							</div>
@@ -246,9 +246,9 @@
 							{{if .Parameter}}{{.Parameter}}{{else}}<span class="muted-text">None</span>{{end}}
 						</td>
 						<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
-						<td class="value-mono">{{.CreatedAt}}</td>
+						<td class="value-mono">{{localTime .CreatedAt}}</td>
 						<td class="value-mono">
-							{{if .CompletedAt}}{{.CompletedAt}}{{else}}<span class="muted-text">Not completed</span>{{end}}
+							{{if .CompletedAt}}{{localTime .CompletedAt}}{{else}}<span class="muted-text">Not completed</span>{{end}}
 						</td>
 						<td>
 							{{if not .CompletedAt}}
@@ -319,8 +319,8 @@
 								<td>{{.ValueType}}</td>
 								<td>{{.Protocol}}</td>
 								<td class="value-mono table-cell-wrap">{{.SourcePath}}</td>
-								<td class="value-mono">{{.TSObserved}}</td>
-								<td class="value-mono">{{.TSReceived}}</td>
+								<td class="value-mono">{{localTime .TSObserved}}</td>
+								<td class="value-mono">{{localTime .TSReceived}}</td>
 							</tr>
 						{{else}}
 							<tr>
@@ -350,7 +350,7 @@
 					<tbody>
 						{{range .RecentEvents}}
 							<tr>
-								<td class="value-mono">{{.TSReceived}}</td>
+								<td class="value-mono">{{localTime .TSReceived}}</td>
 								<td>{{.Protocol}}</td>
 								<td>{{.Direction}}</td>
 								<td>{{.Operation}}</td>

@@ -97,7 +97,43 @@ document.addEventListener("keydown", (event) => {
   });
 });
 
+const localDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "medium",
+});
+
+function formatLocalTimestamp(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return localDateTimeFormatter.format(date);
+}
+
+function formatLocalTimes(root = document) {
+  root.querySelectorAll("[data-local-time]").forEach((element) => {
+    const value = element.getAttribute("datetime") || element.dataset.localTime;
+    const formatted = formatLocalTimestamp(value);
+    if (formatted) {
+      element.textContent = formatted;
+      element.setAttribute("title", value);
+    }
+  });
+
+  root.querySelectorAll("[data-local-time-title]").forEach((element) => {
+    const formatted = formatLocalTimestamp(element.dataset.localTimeTitle);
+    if (formatted) {
+      element.setAttribute("title", `${element.dataset.localTimeTitlePrefix || ""}${formatted}`);
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  formatLocalTimes();
+
   const deviceEvents = document.querySelector("[data-device-events-url]");
   const releaseEvents = document.querySelector("[data-release-events-url]");
   if (!window.EventSource) {
@@ -126,6 +162,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       releaseState.outerHTML = await response.text();
+      formatLocalTimes(document);
       window.htmx?.process(document.body);
     } finally {
       releaseRefreshInFlight = false;
@@ -162,4 +199,8 @@ document.addEventListener("DOMContentLoaded", () => {
     deviceEventStream?.close();
     releaseEventStream?.close();
   });
+});
+
+document.body.addEventListener("htmx:afterSwap", (event) => {
+  formatLocalTimes(event.target);
 });

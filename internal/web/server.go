@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	"mime/multipart"
@@ -355,7 +356,7 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 
 	server := &Server{
 		store:                  store,
-		templates:              template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict}).ParseGlob("templates/*.html")),
+		templates:              template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict, "localTime": localTimeElement}).ParseGlob("templates/*.html")),
 		internalMQTTClientAuth: config.InternalMQTTClientAuth,
 		taskPublisher:          config.TaskPublisher,
 		cveScanWorker:          config.CVEScanWorker,
@@ -3248,6 +3249,46 @@ func formatUnixMS(timestampMS int64) string {
 		return ""
 	}
 	return time.UnixMilli(timestampMS).UTC().Format(time.RFC3339)
+}
+
+func localTimeElement(value string) template.HTML {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	utcValue, ok := normalizeUTCTime(value)
+	if !ok {
+		return template.HTML(html.EscapeString(value))
+	}
+	escapedUTC := html.EscapeString(utcValue)
+	return template.HTML(`<time class="local-time" datetime="` + escapedUTC + `" data-local-time title="` + escapedUTC + `">` + escapedUTC + `</time>`)
+}
+
+func normalizeUTCTime(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999Z07",
+		"2006-01-02 15:04:05.999999Z07:00",
+		"2006-01-02 15:04:05.999999Z07",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05Z07",
+	}
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC().Format(time.RFC3339), true
+		}
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, time.UTC); err == nil {
+		return parsed.UTC().Format(time.RFC3339), true
+	}
+	return "", false
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {

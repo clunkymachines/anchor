@@ -76,7 +76,7 @@
 					</div>
 					<div class="key-value-row">
 						<dt class="key-value-label">Created</dt>
-						<dd class="key-value-value value-mono">{{.Release.CreatedAt}}</dd>
+						<dd class="key-value-value value-mono">{{localTime .Release.CreatedAt}}</dd>
 					</div>
 				</dl>
 			</div>
@@ -112,7 +112,7 @@
 					{{if .SBOM.Present}}
 						<div class="key-value-row">
 							<dt class="key-value-label">SBOM updated</dt>
-							<dd class="key-value-value value-mono">{{.SBOM.UpdatedAt}}</dd>
+							<dd class="key-value-value value-mono">{{localTime .SBOM.UpdatedAt}}</dd>
 						</div>
 					{{end}}
 				</dl>
@@ -172,9 +172,9 @@
 							<td class="value-mono">{{.ID}}</td>
 							<td>{{.Trigger}}</td>
 							<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
-							<td class="value-mono">{{.CreatedAt}}</td>
-							<td class="value-mono">{{if .StartedAt}}{{.StartedAt}}{{else}}<span class="muted-text">Not started</span>{{end}}</td>
-							<td class="value-mono">{{if .FinishedAt}}{{.FinishedAt}}{{else}}<span class="muted-text">Not finished</span>{{end}}</td>
+							<td class="value-mono">{{localTime .CreatedAt}}</td>
+							<td class="value-mono">{{if .StartedAt}}{{localTime .StartedAt}}{{else}}<span class="muted-text">Not started</span>{{end}}</td>
+							<td class="value-mono">{{if .FinishedAt}}{{localTime .FinishedAt}}{{else}}<span class="muted-text">Not finished</span>{{end}}</td>
 							<td class="table-cell-wrap">{{if .ErrorMessage}}{{.ErrorMessage}}{{else}}<span class="muted-text">None</span>{{end}}</td>
 						</tr>
 					{{else}}

@@ -59,9 +59,9 @@
 												<td class="value-mono muted-text">-</td>
 												<td class="value-mono muted-text">-</td>
 											{{end}}
-											<td class="value-mono">{{if .LastScanAt}}{{.LastScanAt}}{{else}}<span class="muted-text">Never</span>{{end}}</td>
+											<td class="value-mono">{{if .LastScanAt}}{{localTime .LastScanAt}}{{else}}<span class="muted-text">Never</span>{{end}}</td>
 											<td class="value-mono">{{.ArtifactSizeBytes}} bytes</td>
-											<td class="value-mono">{{.CreatedAt}}</td>
+											<td class="value-mono">{{localTime .CreatedAt}}</td>
 										</tr>
 									{{else}}
 										<tr>

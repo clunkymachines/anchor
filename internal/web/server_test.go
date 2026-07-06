@@ -383,6 +383,29 @@ func TestDeviceModelsPostCreatesModelWithExpectedRelease(t *testing.T) {
 	}
 }
 
+func TestLocalTimeElementNormalizesUTCTimestamps(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "sqlite current timestamp", input: "2026-06-29 10:01:00", want: `datetime="2026-06-29T10:01:00Z"`},
+		{name: "rfc3339", input: "2026-06-29T10:01:00Z", want: `datetime="2026-06-29T10:01:00Z"`},
+		{name: "postgres offset", input: "2026-06-29 12:01:00+02", want: `datetime="2026-06-29T10:01:00Z"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := string(localTimeElement(tc.input))
+			if !strings.Contains(got, tc.want) || !strings.Contains(got, "data-local-time") {
+				t.Fatalf("expected local time element with %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestDevicesPostCreatesDeviceWithSelectedModel(t *testing.T) {
 	t.Parallel()
 
@@ -1488,7 +1511,7 @@ func (w *recordingCVEWorker) Notify() {
 func testServerWithTemplates(t *testing.T, store *db.Store) *Server {
 	t.Helper()
 
-	templates := template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict}).ParseGlob("../../templates/*.html"))
+	templates := template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict, "localTime": localTimeElement}).ParseGlob("../../templates/*.html"))
 	return &Server{store: store, templates: templates}
 }
 
