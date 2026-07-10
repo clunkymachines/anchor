@@ -1,4 +1,4 @@
-{{template "app_page_start" (dict "Title" "Devices - Anchor" "Shell" .Shell "Active" "devices" "OrganisationAction" "/devices" "SearchPlaceholder" "Search devices" "DeviceBadge" (printf "%d" (len .Devices)) "ReleaseBadge" "" "OTABadge" "")}}
+{{template "app_page_start" (dict "Title" "Devices - Anchor" "Shell" .Shell "Active" "devices" "OrganisationAction" "/devices" "SearchAction" "/devices" "SearchPlaceholder" "Search devices" "SearchQuery" .Query "SearchPageSize" .Pagination.PageSize "DeviceBadge" (printf "%d" .Metrics.TotalDevices) "ReleaseBadge" "" "OTABadge" "")}}
 				<main class="app-workspace">
 					<header class="page-header">
 						<div>
@@ -17,7 +17,7 @@
 							</div>
 							<div>
 								<div class="kpi-label">Total devices</div>
-								<div class="kpi-value">{{len .Devices}}</div>
+								<div class="kpi-value">{{.Metrics.TotalDevices}}</div>
 							</div>
 						</div>
 						<div class="card kpi-card">
@@ -26,7 +26,7 @@
 							</div>
 							<div>
 								<div class="kpi-label">Online</div>
-								<div class="kpi-value">{{.OnlineCount}}</div>
+								<div class="kpi-value">{{.Metrics.OnlineDevices}}</div>
 							</div>
 						</div>
 						<div class="card kpi-card">
@@ -44,7 +44,7 @@
 							</div>
 							<div>
 								<div class="kpi-label">Models</div>
-								<div class="kpi-value">{{.DeviceModelCount}}</div>
+								<div class="kpi-value">{{.Metrics.DeviceModelCount}}</div>
 							</div>
 						</div>
 					</section>
@@ -53,7 +53,7 @@
 						<header class="card-header">
 							<div>
 								<h2 class="card-title">Device inventory</h2>
-								<p class="card-subtitle">{{len .Devices}} devices registered</p>
+								<p class="card-subtitle">{{.DeviceInventoryLabel}}{{if .DeviceInventorySuffix}} · {{.DeviceInventorySuffix}}{{end}}</p>
 							</div>
 							<button class="button button-secondary" type="button">Refresh</button>
 						</header>
@@ -102,12 +102,13 @@
 										</tr>
 									{{else}}
 										<tr>
-											<td class="empty-table-cell" colspan="7">No devices registered yet.</td>
+											<td class="empty-table-cell" colspan="7">{{if $.IsEmptyFiltered}}No devices match this search.{{else}}No devices registered yet.{{end}}</td>
 										</tr>
 									{{end}}
 								</tbody>
 							</table>
 						</div>
+						{{template "table_pagination" .}}
 					</section>
 				</main>
 {{template "app_page_end" .}}

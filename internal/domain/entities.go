@@ -128,6 +128,15 @@ type DeviceWithMQTT struct {
 	MQTTCredential *DeviceMQTTCredential
 }
 
+type DeviceListRow struct {
+	// Device is the configured device.
+	Device Device
+	// HasMQTTCredential records whether a credential exists without exposing auth material.
+	HasMQTTCredential bool
+	// CVEStatus is the denormalized status for the device's matched firmware release.
+	CVEStatus CVEImpactStatus
+}
+
 type DeviceDetail struct {
 	// Device is the device common data.
 	Device Device

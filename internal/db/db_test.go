@@ -70,6 +70,7 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"device_model_id",
 		"software_versions",
 		"is_gateway",
+		"device_search_text",
 		"created_at",
 		"updated_at",
 	})
@@ -140,6 +141,12 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"artifact_filename",
 		"artifact_content_type",
 		"artifact_size_bytes",
+		"cve_status",
+		"active_cve_count",
+		"highest_active_severity",
+		"latest_attempted_scan_id",
+		"latest_successful_scan_id",
+		"latest_scan_warning",
 		"created_at",
 	})
 	assertColumns(t, store, "software_release_sboms", []string{
@@ -719,11 +726,13 @@ func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	if noSBOMStatus.Status != domain.CVEStatusNoSBOM {
 		t.Fatalf("expected no sbom status, got %#v", noSBOMStatus)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 
 	sbom, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseID, 2, 128)
 	if err != nil {
 		t.Fatalf("replace release sbom: %v", err)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 	if sbom.ReleaseID != releaseID || sbom.FileCount != 2 || sbom.TotalSizeBytes != 128 {
 		t.Fatalf("unexpected sbom metadata: %#v", sbom)
 	}
@@ -742,12 +751,14 @@ func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	if run.Status != "pending" || run.ReleaseSBOMID != sbom.ID {
 		t.Fatalf("unexpected enqueued run: %#v", run)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 	if _, err := store.EnqueueCVEScan(ctx, organisationID, releaseID, "manual"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected duplicate active scan conflict, got %v", err)
 	}
 	if err := store.StartCVEScanRun(ctx, organisationID, run.ID, "2026-06-29T10:00:00Z"); err != nil {
 		t.Fatalf("start scan: %v", err)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 	if err := store.CompleteCVEScanRun(ctx, organisationID, run.ID, "2026-06-29T10:01:00Z", []domain.CVEScanFinding{
 		{CVEID: " CVE-2026-0001 ", Severity: "high", PackageName: "lib-a", InstalledVersion: "1.0.0"},
 		{CVEID: "CVE-2026-0001", Severity: "high", PackageName: "lib-a", InstalledVersion: "1.0.0"},
@@ -755,6 +766,7 @@ func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("complete scan: %v", err)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 
 	latest, err := store.LatestSuccessfulCVEScanRun(ctx, organisationID, releaseID)
 	if err != nil {
@@ -777,6 +789,7 @@ func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	if err := store.FailCVEScanRun(ctx, organisationID, failedRun.ID, "2026-06-29T10:02:00Z", "scanner failed"); err != nil {
 		t.Fatalf("fail scan: %v", err)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 	latest, err = store.LatestSuccessfulCVEScanRun(ctx, organisationID, releaseID)
 	if err != nil {
 		t.Fatalf("latest successful scan after failed attempt: %v", err)
@@ -833,6 +846,7 @@ func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	if status.Status != domain.CVEStatusImpacted || status.ActiveCVECount != 1 || status.HighestActiveSeverity != "medium" || !status.HasLatestScanWarning {
 		t.Fatalf("expected waiver-filtered impacted status with warning, got %#v", status)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 	if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
 		Device: domain.Device{
 			ID:               "device-matched",
@@ -883,6 +897,7 @@ func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	if _, err := store.ReplaceReleaseSBOM(ctx, organisationID, releaseID, 1, 64); err != nil {
 		t.Fatalf("replace release sbom again: %v", err)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 	runs, err := store.ListCVEScanRuns(ctx, organisationID, releaseID)
 	if err != nil {
 		t.Fatalf("list scan runs after sbom replacement: %v", err)
@@ -904,6 +919,7 @@ func TestCVEPersistenceTracksCurrentSBOMScansFindingsAndWaivers(t *testing.T) {
 	if err := store.ClearReleaseSBOM(ctx, organisationID, releaseID); err != nil {
 		t.Fatalf("clear release sbom: %v", err)
 	}
+	assertReleaseSummaryMatchesCalculation(t, store, organisationID, releaseID)
 	if _, err := store.CurrentReleaseSBOM(ctx, organisationID, releaseID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected no current sbom after clear, got %v", err)
 	}
@@ -976,6 +992,201 @@ func TestSaveDeviceWithMQTTCredential(t *testing.T) {
 	}
 	if detail.Device.OrganisationID != organisationID || !detail.Device.IsGateway {
 		t.Fatalf("unexpected device detail organisation/gateway: %#v", detail.Device)
+	}
+}
+
+func TestDeviceListPageSearchPaginationAndMetrics(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, Config{
+		Dialect: DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID := testOrganisationID(t, store)
+	otherOrganisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: t.Name() + " other"})
+	if err != nil {
+		t.Fatalf("create other organisation: %v", err)
+	}
+	sensorModelID := testDeviceModelID(t, store, organisationID, "Sensor")
+	gatewayModelID := testDeviceModelID(t, store, organisationID, "Gateway")
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	devices := []domain.DeviceWithMQTTCredential{
+		{
+			Device: domain.Device{
+				ID:               "alpha-01",
+				OrganisationID:   organisationID,
+				DeviceModelID:    sensorModelID,
+				SoftwareVersions: domain.SoftwareVersions{},
+			},
+			Credential: domain.DeviceMQTTCredential{DeviceID: "alpha-01", Username: "field-alpha", PasswordHash: "secret-alpha", Enabled: false},
+		},
+		{
+			Device: domain.Device{
+				ID:               "beta-01",
+				OrganisationID:   organisationID,
+				DeviceModelID:    sensorModelID,
+				SoftwareVersions: domain.SoftwareVersions{},
+			},
+			Credential: domain.DeviceMQTTCredential{DeviceID: "beta-01", Username: "field-beta", PasswordHash: "secret-beta", Enabled: true},
+		},
+		{
+			Device: domain.Device{
+				ID:               "gateway-01",
+				OrganisationID:   organisationID,
+				DeviceModelID:    gatewayModelID,
+				SoftwareVersions: domain.SoftwareVersions{},
+				IsGateway:        true,
+			},
+			Credential: domain.DeviceMQTTCredential{DeviceID: "gateway-01", Username: "edge-gateway", PasswordHash: "secret-gateway", Enabled: true},
+		},
+		{
+			Device: domain.Device{
+				ID:               "other-alpha",
+				OrganisationID:   otherOrganisationID,
+				DeviceModelID:    testDeviceModelID(t, store, otherOrganisationID, "Sensor"),
+				SoftwareVersions: domain.SoftwareVersions{},
+			},
+			Credential: domain.DeviceMQTTCredential{DeviceID: "other-alpha", Username: "other-alpha", PasswordHash: "secret", Enabled: true},
+		},
+	}
+	for _, device := range devices {
+		if err := store.SaveDeviceWithMQTTCredential(ctx, device); err != nil {
+			t.Fatalf("save device %s: %v", device.Device.ID, err)
+		}
+	}
+	for i := 1; i <= 27; i++ {
+		deviceID := fmt.Sprintf("sensor-%02d", i)
+		if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+			Device: domain.Device{
+				ID:               deviceID,
+				OrganisationID:   organisationID,
+				DeviceModelID:    sensorModelID,
+				SoftwareVersions: domain.SoftwareVersions{},
+			},
+			Credential: domain.DeviceMQTTCredential{DeviceID: deviceID, Username: deviceID, PasswordHash: "bulk-secret", Enabled: true},
+		}); err != nil {
+			t.Fatalf("save bulk device %s: %v", deviceID, err)
+		}
+	}
+	if _, err := store.InsertDeviceEvent(ctx, domain.DeviceEvent{
+		DeviceID:     "alpha-01",
+		TSReceivedMS: now.Add(-30 * time.Second).UnixMilli(),
+		Protocol:     "mqtt",
+		Direction:    "inbound",
+		Operation:    "publish",
+	}); err != nil {
+		t.Fatalf("insert connected event: %v", err)
+	}
+	if _, err := store.InsertDeviceEvent(ctx, domain.DeviceEvent{
+		DeviceID:     "beta-01",
+		TSReceivedMS: now.Add(-2 * time.Minute).UnixMilli(),
+		Protocol:     "mqtt",
+		Direction:    "inbound",
+		Operation:    "publish",
+	}); err != nil {
+		t.Fatalf("insert disconnected event: %v", err)
+	}
+
+	page := mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Page:           1,
+		PageSize:       25,
+	})
+	if page.FilteredCount != 30 || len(page.Rows) != 25 {
+		t.Fatalf("expected first page of 25 from 30 devices, got count=%d rows=%#v", page.FilteredCount, page.Rows)
+	}
+	if page.Rows[0].Device.ID != "gateway-01" || page.Rows[1].Device.ID != "alpha-01" {
+		t.Fatalf("expected model/id ordering, got %#v", page.Rows)
+	}
+
+	page = mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Query:          "FIELD-BETA",
+		Page:           1,
+		PageSize:       50,
+	})
+	if page.FilteredCount != 1 || len(page.Rows) != 1 || page.Rows[0].Device.ID != "beta-01" {
+		t.Fatalf("expected case-insensitive MQTT username search, got count=%d rows=%#v", page.FilteredCount, page.Rows)
+	}
+	page = mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Query:          "gateway",
+		Page:           1,
+		PageSize:       50,
+	})
+	if page.FilteredCount != 1 || page.Rows[0].Device.ID != "gateway-01" {
+		t.Fatalf("expected model name search, got count=%d rows=%#v", page.FilteredCount, page.Rows)
+	}
+	page = mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Query:          "secret",
+		Page:           1,
+		PageSize:       50,
+	})
+	if page.FilteredCount != 0 || len(page.Rows) != 0 {
+		t.Fatalf("expected password hash to be excluded from search text, got count=%d rows=%#v", page.FilteredCount, page.Rows)
+	}
+	if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+		Device: domain.Device{
+			ID:               "beta-01",
+			OrganisationID:   organisationID,
+			DeviceModelID:    gatewayModelID,
+			SoftwareVersions: domain.SoftwareVersions{},
+		},
+		Credential: domain.DeviceMQTTCredential{DeviceID: "beta-01", Username: "renamed-beta", PasswordHash: "new-secret", Enabled: true},
+	}); err != nil {
+		t.Fatalf("update beta search fields: %v", err)
+	}
+	page = mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Query:          "field-beta",
+		Page:           1,
+		PageSize:       50,
+	})
+	if page.FilteredCount != 0 {
+		t.Fatalf("expected stale mqtt username to leave search text, got count=%d rows=%#v", page.FilteredCount, page.Rows)
+	}
+	page = mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Query:          "renamed-beta",
+		Page:           1,
+		PageSize:       50,
+	})
+	if page.FilteredCount != 1 || page.Rows[0].Device.ID != "beta-01" {
+		t.Fatalf("expected refreshed mqtt username search, got count=%d rows=%#v", page.FilteredCount, page.Rows)
+	}
+	page = mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Query:          "gateway",
+		Page:           1,
+		PageSize:       50,
+	})
+	if page.FilteredCount != 2 {
+		t.Fatalf("expected refreshed model assignment search, got count=%d rows=%#v", page.FilteredCount, page.Rows)
+	}
+
+	page = mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Page:           99,
+		PageSize:       25,
+	})
+	if page.Pagination.Page != 2 || page.Pagination.PageSize != 25 {
+		t.Fatalf("expected out-of-range page clamp, got %#v", page.Pagination)
+	}
+
+	metrics, err := store.DeviceFleetMetrics(ctx, organisationID, now.UnixMilli())
+	if err != nil {
+		t.Fatalf("device fleet metrics: %v", err)
+	}
+	if metrics.TotalDevices != 30 || metrics.OnlineDevices != 1 || metrics.DeviceModelCount != 2 {
+		t.Fatalf("unexpected metrics: %#v", metrics)
 	}
 }
 
@@ -1590,6 +1801,39 @@ func testDeviceModelID(t *testing.T, store *Store, organisationID int64, name st
 		t.Fatalf("create device model: %v", err)
 	}
 	return id
+}
+
+func mustDevicePage(t *testing.T, store *Store, query DeviceListQuery) DeviceListPage {
+	t.Helper()
+
+	page, err := store.ListDevicePage(context.Background(), query)
+	if err != nil {
+		t.Fatalf("list device page: %v", err)
+	}
+	return page
+}
+
+func assertReleaseSummaryMatchesCalculation(t *testing.T, store *Store, organisationID int64, releaseID int64) {
+	t.Helper()
+
+	ctx := context.Background()
+	want, err := store.calculateReleaseCVEStatus(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("calculate release cve status: %v", err)
+	}
+	got, err := store.ReleaseCVESummary(ctx, organisationID, releaseID)
+	if err != nil {
+		t.Fatalf("release cve summary: %v", err)
+	}
+	if got.Status != want.Status ||
+		got.ActiveCVECount != want.ActiveCVECount ||
+		got.HighestActiveSeverity != want.HighestActiveSeverity ||
+		got.HasLatestScanWarning != want.HasLatestScanWarning ||
+		got.LatestScanWarning != want.LatestScanWarning ||
+		got.LatestAttemptedScanID != want.LatestAttemptedScanID ||
+		got.LatestSuccessfulScanID != want.LatestSuccessfulScanID {
+		t.Fatalf("persisted summary mismatch:\n got  %#v\n want %#v", got, want)
+	}
 }
 
 func containsOrganisationID(organisations []domain.Organisation, organisationID int64) bool {

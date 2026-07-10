@@ -118,10 +118,19 @@
 
 {{define "app_topbar"}}
 <header class="app-topbar">
-	<div class="search-field">
-		<span aria-hidden="true">{{template "icon_search" .}}</span>
-		<input type="search" name="q" placeholder="{{.SearchPlaceholder}}">
-	</div>
+	{{if .SearchAction}}
+		<form class="search-field" method="get" action="{{.SearchAction}}">
+			<span aria-hidden="true">{{template "icon_search" .}}</span>
+			<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+			<input type="hidden" name="page_size" value="{{.SearchPageSize}}">
+			<input type="search" name="q" value="{{.SearchQuery}}" placeholder="{{.SearchPlaceholder}}">
+		</form>
+	{{else}}
+		<div class="search-field">
+			<span aria-hidden="true">{{template "icon_search" .}}</span>
+			<input type="search" name="q" placeholder="{{.SearchPlaceholder}}">
+		</div>
+	{{end}}
 	<div class="topbar-actions">
 		<form method="post" action="/logout">
 			<button class="button button-ghost" type="submit">Sign out</button>
@@ -135,6 +144,43 @@
 		</div>
 	</div>
 </header>
+{{end}}
+
+{{define "table_pagination"}}
+<footer class="table-pagination">
+	<div class="pagination-summary">
+		{{if gt .Pagination.TotalRows 0}}
+			Showing <span class="value-mono">{{.Pagination.RangeStart}}-{{.Pagination.RangeEnd}}</span> of <span class="value-mono">{{.Pagination.TotalRows}}</span>
+		{{else}}
+			Showing <span class="value-mono">0</span> of <span class="value-mono">0</span>
+		{{end}}
+	</div>
+	<div class="pagination-controls">
+		{{if .Pagination.HasPrev}}
+			<a class="button button-secondary button-small" href="{{.Pagination.PrevURL}}">Previous</a>
+		{{else}}
+			<span class="button button-secondary button-small is-disabled">Previous</span>
+		{{end}}
+		<span class="pagination-page">Page {{.Pagination.Page}} of {{.Pagination.TotalPages}}</span>
+		{{if .Pagination.HasNext}}
+			<a class="button button-secondary button-small" href="{{.Pagination.NextURL}}">Next</a>
+		{{else}}
+			<span class="button button-secondary button-small is-disabled">Next</span>
+		{{end}}
+		<form class="page-size-form" method="get" action="/devices">
+			<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+			{{if .Query}}<input type="hidden" name="q" value="{{.Query}}">{{end}}
+			<label>
+				<span>Rows</span>
+				<select name="page_size" onchange="this.form.submit()">
+					{{range .Pagination.PageSizes}}
+						<option value="{{.}}" {{if eq . $.Pagination.PageSize}}selected{{end}}>{{.}}</option>
+					{{end}}
+				</select>
+			</label>
+		</form>
+	</div>
+</footer>
 {{end}}
 
 {{define "password_toggle"}}

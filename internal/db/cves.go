@@ -74,6 +74,9 @@ func (s *Store) ReplaceReleaseSBOM(ctx context.Context, organisationID int64, re
 		return domain.ReleaseSBOM{}, fmt.Errorf("unsupported db dialect %q", s.dialect)
 	}
 
+	if err := s.refreshReleaseCVESummaryTx(ctx, tx, organisationID, releaseID); err != nil {
+		return domain.ReleaseSBOM{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.ReleaseSBOM{}, err
 	}
@@ -95,6 +98,9 @@ func (s *Store) ClearReleaseSBOM(ctx context.Context, organisationID int64, rele
 		`DELETE FROM software_release_sboms WHERE organisation_id = ? AND release_id = ?`,
 		`DELETE FROM software_release_sboms WHERE organisation_id = $1 AND release_id = $2`,
 	), organisationID, releaseID); err != nil {
+		return err
+	}
+	if err := s.refreshReleaseCVESummaryTx(ctx, tx, organisationID, releaseID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -165,6 +171,9 @@ func (s *Store) EnqueueCVEScan(ctx context.Context, organisationID int64, releas
 		}
 		run, err = s.CVEScanRun(ctx, organisationID, id)
 		if err == nil {
+			if refreshErr := s.RefreshReleaseCVESummary(ctx, organisationID, releaseID); refreshErr != nil {
+				return domain.CVEScanRun{}, refreshErr
+			}
 			s.publishReleaseCVEScan(organisationID, releaseID)
 		}
 		return run, err
@@ -188,6 +197,9 @@ func (s *Store) EnqueueCVEScan(ctx context.Context, organisationID int64, releas
 			if isUniqueConstraintError(err) {
 				return domain.CVEScanRun{}, ErrConflict
 			}
+			return domain.CVEScanRun{}, err
+		}
+		if err := s.RefreshReleaseCVESummary(ctx, organisationID, releaseID); err != nil {
 			return domain.CVEScanRun{}, err
 		}
 		s.publishReleaseCVEScan(organisationID, releaseID)
@@ -274,31 +286,49 @@ func (s *Store) StartCVEScanRun(ctx context.Context, organisationID int64, scanR
 	}
 	run, err := s.CVEScanRun(ctx, organisationID, scanRunID)
 	if err == nil {
+		if refreshErr := s.RefreshReleaseCVESummary(ctx, organisationID, run.ReleaseID); refreshErr != nil {
+			return refreshErr
+		}
 		s.publishReleaseCVEScan(organisationID, run.ReleaseID)
 	}
 	return nil
 }
 
 func (s *Store) MarkRunningCVEScansFailed(ctx context.Context, finishedAt string, errorMessage string) (int64, error) {
-	query := `
-		UPDATE cve_scan_runs
-		SET status = 'failed', error_message = ?, finished_at = ?
-		WHERE status = 'running'
-	`
-	args := []any{strings.TrimSpace(errorMessage), nullableTime(finishedAt)}
-	if s.isPostgres() {
-		query = `
-			UPDATE cve_scan_runs
-			SET status = 'failed', error_message = $1, finished_at = $2
-			WHERE status = 'running'
-		`
-	}
-
-	result, err := s.writeDB.ExecContext(ctx, query, args...)
+	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	defer tx.Rollback()
+
+	releases, err := s.runningCVEReleaseIDsTx(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	query := s.placeholderSQL(
+		`UPDATE cve_scan_runs SET status = 'failed', error_message = ?, finished_at = ? WHERE status = 'running'`,
+		`UPDATE cve_scan_runs SET status = 'failed', error_message = $1, finished_at = $2 WHERE status = 'running'`,
+	)
+	result, err := tx.ExecContext(ctx, query, strings.TrimSpace(errorMessage), nullableTime(finishedAt))
+	if err != nil {
+		return 0, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	for _, release := range releases {
+		if err := s.refreshReleaseCVESummaryTx(ctx, tx, release.organisationID, release.releaseID); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	for _, release := range releases {
+		s.publishReleaseCVEScan(release.organisationID, release.releaseID)
+	}
+	return rowsAffected, nil
 }
 
 func (s *Store) CompleteCVEScanRun(ctx context.Context, organisationID int64, scanRunID int64, finishedAt string, findings []domain.CVEScanFinding) error {
@@ -347,6 +377,9 @@ func (s *Store) CompleteCVEScanRun(ctx context.Context, organisationID int64, sc
 	), nullableTime(finishedAt), organisationID, scanRunID); err != nil {
 		return err
 	}
+	if err := s.refreshReleaseCVESummaryTx(ctx, tx, organisationID, releaseID); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -355,26 +388,37 @@ func (s *Store) CompleteCVEScanRun(ctx context.Context, organisationID int64, sc
 }
 
 func (s *Store) FailCVEScanRun(ctx context.Context, organisationID int64, scanRunID int64, finishedAt string, errorMessage string) error {
-	query := `
-		UPDATE cve_scan_runs
-		SET status = 'failed', error_message = ?, finished_at = ?
-		WHERE organisation_id = ? AND id = ? AND status IN ('pending', 'running')
-	`
-	args := []any{strings.TrimSpace(errorMessage), nullableTime(finishedAt), organisationID, scanRunID}
-	if s.isPostgres() {
-		query = `
-			UPDATE cve_scan_runs
-			SET status = 'failed', error_message = $1, finished_at = $2
-			WHERE organisation_id = $3 AND id = $4 AND status IN ('pending', 'running')
-		`
-	}
-	if err := s.execOne(ctx, query, args...); err != nil {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	run, err := s.CVEScanRun(ctx, organisationID, scanRunID)
-	if err == nil {
-		s.publishReleaseCVEScan(organisationID, run.ReleaseID)
+	defer tx.Rollback()
+
+	var releaseID int64
+	err = tx.QueryRowContext(ctx, s.placeholderSQL(
+		`SELECT release_id FROM cve_scan_runs WHERE organisation_id = ? AND id = ? AND status IN ('pending', 'running')`,
+		`SELECT release_id FROM cve_scan_runs WHERE organisation_id = $1 AND id = $2 AND status IN ('pending', 'running')`,
+	), organisationID, scanRunID).Scan(&releaseID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
 	}
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, s.placeholderSQL(
+		`UPDATE cve_scan_runs SET status = 'failed', error_message = ?, finished_at = ? WHERE organisation_id = ? AND id = ?`,
+		`UPDATE cve_scan_runs SET status = 'failed', error_message = $1, finished_at = $2 WHERE organisation_id = $3 AND id = $4`,
+	), strings.TrimSpace(errorMessage), nullableTime(finishedAt), organisationID, scanRunID); err != nil {
+		return err
+	}
+	if err := s.refreshReleaseCVESummaryTx(ctx, tx, organisationID, releaseID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.publishReleaseCVEScan(organisationID, releaseID)
 	return nil
 }
 
@@ -457,6 +501,64 @@ func (s *Store) ListActiveCVEFindings(ctx context.Context, organisationID int64,
 }
 
 func (s *Store) ReleaseCVEImpactStatus(ctx context.Context, organisationID int64, releaseID int64) (domain.CVEImpactStatus, error) {
+	return s.ReleaseCVESummary(ctx, organisationID, releaseID)
+}
+
+func (s *Store) ReleaseCVESummary(ctx context.Context, organisationID int64, releaseID int64) (domain.CVEImpactStatus, error) {
+	query := `
+		SELECT cve_status, active_cve_count, highest_active_severity,
+			latest_attempted_scan_id, latest_successful_scan_id, latest_scan_warning
+		FROM software_releases
+		WHERE organisation_id = ? AND id = ?
+	`
+	args := []any{organisationID, releaseID}
+	if s.isPostgres() {
+		query = `
+			SELECT cve_status, active_cve_count, highest_active_severity,
+				latest_attempted_scan_id, latest_successful_scan_id, latest_scan_warning
+			FROM software_releases
+			WHERE organisation_id = $1 AND id = $2
+		`
+	}
+	var (
+		statusValue        nullableString
+		activeCount        nullableInt64
+		highestSeverity    nullableString
+		latestAttemptedID  nullableInt64
+		latestSuccessfulID nullableInt64
+		latestScanWarning  nullableString
+	)
+	err := s.readDB.QueryRowContext(ctx, query, args...).Scan(
+		&statusValue,
+		&activeCount,
+		&highestSeverity,
+		&latestAttemptedID,
+		&latestSuccessfulID,
+		&latestScanWarning,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.CVEImpactStatus{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.CVEImpactStatus{}, err
+	}
+	return scanCVEImpactStatusFields(statusValue, activeCount, highestSeverity, latestAttemptedID, latestSuccessfulID, latestScanWarning), nil
+}
+
+func (s *Store) RefreshReleaseCVESummary(ctx context.Context, organisationID int64, releaseID int64) error {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.refreshReleaseCVESummaryTx(ctx, tx, organisationID, releaseID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) calculateReleaseCVEStatus(ctx context.Context, organisationID int64, releaseID int64) (domain.CVEImpactStatus, error) {
 	if _, err := s.CurrentReleaseSBOM(ctx, organisationID, releaseID); errors.Is(err, ErrNotFound) {
 		if _, releaseErr := s.SoftwareRelease(ctx, releaseID, organisationID); releaseErr != nil {
 			return domain.CVEImpactStatus{}, releaseErr
@@ -498,7 +600,7 @@ func (s *Store) DeviceCVEImpactStatus(ctx context.Context, organisationID int64,
 		return domain.CVEImpactStatus{}, err
 	}
 
-	status, err := s.ReleaseCVEImpactStatus(ctx, organisationID, release.ID)
+	status, err := s.ReleaseCVESummary(ctx, organisationID, release.ID)
 	if err != nil {
 		return domain.CVEImpactStatus{}, err
 	}
@@ -551,6 +653,9 @@ func (s *Store) UpsertReleaseCVEWaiver(ctx context.Context, waiver domain.Releas
 	default:
 		return domain.ReleaseCVEWaiver{}, fmt.Errorf("unsupported db dialect %q", s.dialect)
 	}
+	if err := s.RefreshReleaseCVESummary(ctx, waiver.OrganisationID, waiver.ReleaseID); err != nil {
+		return domain.ReleaseCVEWaiver{}, err
+	}
 	return s.ReleaseCVEWaiver(ctx, waiver.OrganisationID, waiver.ReleaseID, waiver.CVEID)
 }
 
@@ -560,7 +665,10 @@ func (s *Store) DeleteReleaseCVEWaiver(ctx context.Context, organisationID int64
 	if s.isPostgres() {
 		query = `DELETE FROM release_cve_waivers WHERE organisation_id = $1 AND release_id = $2 AND cve_id = $3`
 	}
-	return s.execOne(ctx, query, args...)
+	if err := s.execOne(ctx, query, args...); err != nil {
+		return err
+	}
+	return s.RefreshReleaseCVESummary(ctx, organisationID, releaseID)
 }
 
 func (s *Store) ReleaseCVEWaiver(ctx context.Context, organisationID int64, releaseID int64, cveID string) (domain.ReleaseCVEWaiver, error) {
@@ -699,6 +807,191 @@ func (s *Store) ensureReleaseExistsTx(ctx context.Context, tx *sql.Tx, organisat
 		return ErrNotFound
 	}
 	return err
+}
+
+func (s *Store) refreshReleaseCVESummaryTx(ctx context.Context, tx *sql.Tx, organisationID int64, releaseID int64) error {
+	status, err := s.calculateReleaseCVEStatusTx(ctx, tx, organisationID, releaseID)
+	if err != nil {
+		return err
+	}
+	statusValue, activeCount, highestSeverity, latestAttemptedID, latestSuccessfulID, latestScanWarning := nullableCVEStatus(status)
+	result, err := tx.ExecContext(ctx, s.placeholderSQL(
+		`UPDATE software_releases
+		SET cve_status = ?, active_cve_count = ?, highest_active_severity = ?,
+			latest_attempted_scan_id = ?, latest_successful_scan_id = ?, latest_scan_warning = ?
+		WHERE organisation_id = ? AND id = ?`,
+		`UPDATE software_releases
+		SET cve_status = $1, active_cve_count = $2, highest_active_severity = $3,
+			latest_attempted_scan_id = $4, latest_successful_scan_id = $5, latest_scan_warning = $6
+		WHERE organisation_id = $7 AND id = $8`,
+	), statusValue, activeCount, highestSeverity, latestAttemptedID, latestSuccessfulID, latestScanWarning, organisationID, releaseID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) calculateReleaseCVEStatusTx(ctx context.Context, tx *sql.Tx, organisationID int64, releaseID int64) (domain.CVEImpactStatus, error) {
+	if err := s.ensureReleaseExistsTx(ctx, tx, organisationID, releaseID); err != nil {
+		return domain.CVEImpactStatus{}, err
+	}
+
+	var hasSBOM int
+	err := tx.QueryRowContext(ctx, s.placeholderSQL(
+		`SELECT 1 FROM software_release_sboms WHERE organisation_id = ? AND release_id = ?`,
+		`SELECT 1 FROM software_release_sboms WHERE organisation_id = $1 AND release_id = $2`,
+	), organisationID, releaseID).Scan(&hasSBOM)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.CalculateReleaseCVEStatus(false, nil, nil), nil
+	}
+	if err != nil {
+		return domain.CVEImpactStatus{}, err
+	}
+
+	scanRuns, err := s.listCVEScanRunsTx(ctx, tx, organisationID, releaseID)
+	if err != nil {
+		return domain.CVEImpactStatus{}, err
+	}
+	latestSuccessID := latestSuccessfulScanRunID(scanRuns)
+	var activeFindings []domain.CVEScanFinding
+	if latestSuccessID > 0 {
+		activeFindings, err = s.listCVEFindingsForRunTx(ctx, tx, organisationID, releaseID, latestSuccessID, true)
+		if err != nil {
+			return domain.CVEImpactStatus{}, err
+		}
+	}
+	return domain.CalculateReleaseCVEStatus(true, scanRuns, activeFindings), nil
+}
+
+func (s *Store) listCVEScanRunsTx(ctx context.Context, tx *sql.Tx, organisationID int64, releaseID int64) ([]domain.CVEScanRun, error) {
+	query := `
+		SELECT id, organisation_id, release_id, release_sbom_id, trigger_source, status, error_message, created_at, started_at, finished_at
+		FROM cve_scan_runs
+		WHERE organisation_id = ? AND release_id = ?
+		ORDER BY created_at DESC, id DESC
+	`
+	args := []any{organisationID, releaseID}
+	if s.isPostgres() {
+		query = `
+			SELECT id, organisation_id, release_id, release_sbom_id, trigger_source, status, error_message, created_at::text, started_at::text, finished_at::text
+			FROM cve_scan_runs
+			WHERE organisation_id = $1 AND release_id = $2
+			ORDER BY created_at DESC, id DESC
+		`
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []domain.CVEScanRun
+	for rows.Next() {
+		run, err := scanCVEScanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+func (s *Store) listCVEFindingsForRunTx(ctx context.Context, tx *sql.Tx, organisationID int64, releaseID int64, scanRunID int64, activeOnly bool) ([]domain.CVEScanFinding, error) {
+	query := `
+		SELECT f.id, f.organisation_id, f.release_id, f.scan_run_id, f.cve_id, f.severity, f.package_name, f.installed_version, f.created_at
+		FROM cve_scan_findings f
+		WHERE f.organisation_id = ? AND f.release_id = ? AND f.scan_run_id = ?
+	`
+	args := []any{organisationID, releaseID, scanRunID}
+	if activeOnly {
+		query += ` AND NOT EXISTS (
+			SELECT 1
+			FROM release_cve_waivers w
+			WHERE w.organisation_id = f.organisation_id AND w.release_id = f.release_id AND w.cve_id = f.cve_id
+		)`
+	}
+	query += ` ORDER BY f.cve_id, f.package_name, f.installed_version`
+	if s.isPostgres() {
+		query = `
+			SELECT f.id, f.organisation_id, f.release_id, f.scan_run_id, f.cve_id, f.severity, f.package_name, f.installed_version, f.created_at::text
+			FROM cve_scan_findings f
+			WHERE f.organisation_id = $1 AND f.release_id = $2 AND f.scan_run_id = $3
+		`
+		if activeOnly {
+			query += ` AND NOT EXISTS (
+				SELECT 1
+				FROM release_cve_waivers w
+				WHERE w.organisation_id = f.organisation_id AND w.release_id = f.release_id AND w.cve_id = f.cve_id
+			)`
+		}
+		query += ` ORDER BY f.cve_id, f.package_name, f.installed_version`
+	}
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var findings []domain.CVEScanFinding
+	for rows.Next() {
+		finding, err := scanCVEScanFinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return findings, nil
+}
+
+type releaseCVEKey struct {
+	organisationID int64
+	releaseID      int64
+}
+
+func (s *Store) runningCVEReleaseIDsTx(ctx context.Context, tx *sql.Tx) ([]releaseCVEKey, error) {
+	query := `SELECT DISTINCT organisation_id, release_id FROM cve_scan_runs WHERE status = 'running'`
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var releases []releaseCVEKey
+	for rows.Next() {
+		var release releaseCVEKey
+		if err := rows.Scan(&release.organisationID, &release.releaseID); err != nil {
+			return nil, err
+		}
+		releases = append(releases, release)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return releases, nil
+}
+
+func latestSuccessfulScanRunID(scanRuns []domain.CVEScanRun) int64 {
+	var latest int64
+	for _, run := range scanRuns {
+		if run.Status == "success" && run.ID > latest {
+			latest = run.ID
+		}
+	}
+	return latest
 }
 
 func (s *Store) insertFindingSQL() string {

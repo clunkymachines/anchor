@@ -218,6 +218,9 @@ func (s *Store) SaveDeviceWithMQTTCredential(ctx context.Context, cfg domain.Dev
 	if err := s.upsertMQTTCredential(ctx, tx, cfg.Credential); err != nil {
 		return err
 	}
+	if err := s.refreshDeviceSearchTextTx(ctx, tx, cfg.Device.OrganisationID, cfg.Device.ID); err != nil {
+		return err
+	}
 
 	return tx.Commit()
 }
@@ -351,4 +354,80 @@ func (s *Store) upsertMQTTCredential(ctx context.Context, tx txRunner, credentia
 	default:
 		return fmt.Errorf("unsupported db dialect %q", s.dialect)
 	}
+}
+
+func (s *Store) RefreshDeviceSearchText(ctx context.Context, organisationID int64, deviceID string) error {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.refreshDeviceSearchTextTx(ctx, tx, organisationID, deviceID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RefreshDeviceSearchTextForModel(ctx context.Context, organisationID int64, modelID int64) error {
+	// Model names are currently immutable; call this from future model rename support.
+	query := `
+		UPDATE devices
+		SET device_search_text = LOWER(TRIM(
+			id || ' ' ||
+			COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
+			COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+		))
+		WHERE organisation_id = ? AND device_model_id = ?
+	`
+	args := []any{organisationID, modelID}
+	if s.isPostgres() {
+		query = `
+			UPDATE devices
+			SET device_search_text = LOWER(TRIM(
+				id || ' ' ||
+				COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
+				COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+			))
+			WHERE organisation_id = $1 AND device_model_id = $2
+		`
+	}
+	_, err := s.writeDB.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) refreshDeviceSearchTextTx(ctx context.Context, tx txRunner, organisationID int64, deviceID string) error {
+	query := `
+		UPDATE devices
+		SET device_search_text = LOWER(TRIM(
+			id || ' ' ||
+			COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
+			COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+		))
+		WHERE organisation_id = ? AND id = ?
+	`
+	args := []any{organisationID, deviceID}
+	if s.isPostgres() {
+		query = `
+			UPDATE devices
+			SET device_search_text = LOWER(TRIM(
+				id || ' ' ||
+				COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
+				COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+			))
+			WHERE organisation_id = $1 AND id = $2
+		`
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

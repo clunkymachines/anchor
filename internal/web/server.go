@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -89,10 +90,17 @@ type shellPageData struct {
 }
 
 type devicesPageData struct {
-	Shell            shellPageData
-	Devices          []deviceView
-	DeviceModelCount int
-	OnlineCount      int
+	Shell                 shellPageData
+	Devices               []deviceView
+	Metrics               db.DeviceFleetMetrics
+	FilteredCount         int
+	Query                 string
+	Pagination            paginationView
+	HasQuery              bool
+	IsEmptyUnfiltered     bool
+	IsEmptyFiltered       bool
+	DeviceInventoryLabel  string
+	DeviceInventorySuffix string
 }
 
 type deviceCreatePageData struct {
@@ -198,6 +206,20 @@ type deviceView struct {
 	Status           string
 	StatusClass      string
 	LastSeen         string
+}
+
+type paginationView struct {
+	Page       int
+	PageSize   int
+	TotalRows  int
+	TotalPages int
+	RangeStart int
+	RangeEnd   int
+	HasPrev    bool
+	HasNext    bool
+	PrevURL    string
+	NextURL    string
+	PageSizes  []int
 }
 
 type deviceDetailView struct {
@@ -523,45 +545,44 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	devices, err := s.store.ListDevicesWithMQTT(r.Context(), shell.SelectedOrganisationID)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
+	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), db.DefaultDevicePageSize)
+	devicePage, err := s.store.ListDevicePage(r.Context(), db.DeviceListQuery{
+		OrganisationID: shell.SelectedOrganisationID,
+		Query:          query,
+		Page:           page,
+		PageSize:       pageSize,
+	})
 	if err != nil {
 		http.Error(w, "device query error", http.StatusInternalServerError)
 		return
 	}
-	deviceModels, err := s.store.ListDeviceModels(r.Context(), shell.SelectedOrganisationID)
+	metrics, err := s.store.DeviceFleetMetrics(r.Context(), shell.SelectedOrganisationID, time.Now().UnixMilli())
 	if err != nil {
-		http.Error(w, "device model query error", http.StatusInternalServerError)
+		http.Error(w, "device metrics query error", http.StatusInternalServerError)
 		return
 	}
 
-	views := make([]deviceView, 0, len(devices))
+	views := make([]deviceView, 0, len(devicePage.Rows))
 	now := time.Now()
-	onlineCount := 0
-	for _, device := range devices {
+	for _, row := range devicePage.Rows {
 		communication := []string{}
-		if device.MQTTCredential != nil {
+		if row.HasMQTTCredential {
 			communication = append(communication, "MQTT")
 		}
-		if device.Device.IsGateway {
+		if row.Device.IsGateway {
 			communication = append(communication, "Gateway")
 		}
-		connectivity := deviceConnectivity(device.Device, now)
-		if connectivity.Connected {
-			onlineCount++
-		}
-		cveStatus, err := s.store.DeviceCVEImpactStatus(r.Context(), shell.SelectedOrganisationID, device.Device.ID)
-		if err != nil {
-			http.Error(w, "device cve status query error", http.StatusInternalServerError)
-			return
-		}
+		connectivity := deviceConnectivity(row.Device, now)
 		views = append(views, deviceView{
-			ID:               device.Device.ID,
-			OrganisationID:   device.Device.OrganisationID,
-			ModelName:        device.Device.ModelName,
-			SoftwareVersions: formatSoftwareVersions(device.Device.SoftwareVersions),
-			FirmwareVersion:  firmwareVersion(device.Device.SoftwareVersions),
-			CVEStatus:        cveStatusViewFor(cveStatus),
-			IsGateway:        device.Device.IsGateway,
+			ID:               row.Device.ID,
+			OrganisationID:   row.Device.OrganisationID,
+			ModelName:        row.Device.ModelName,
+			SoftwareVersions: formatSoftwareVersions(row.Device.SoftwareVersions),
+			FirmwareVersion:  firmwareVersion(row.Device.SoftwareVersions),
+			CVEStatus:        cveStatusViewFor(row.CVEStatus),
+			IsGateway:        row.Device.IsGateway,
 			Communication:    communication,
 			Status:           connectivity.Status,
 			StatusClass:      connectivity.StatusClass,
@@ -569,11 +590,25 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	hasQuery := query != ""
+	inventoryLabel := strconv.Itoa(metrics.TotalDevices) + " devices registered"
+	inventorySuffix := ""
+	if hasQuery {
+		inventoryLabel = strconv.Itoa(devicePage.FilteredCount) + " matching devices"
+		inventorySuffix = "from " + strconv.Itoa(metrics.TotalDevices) + " registered"
+	}
 	s.renderDevices(w, r, devicesPageData{
-		Shell:            shell,
-		Devices:          views,
-		DeviceModelCount: len(deviceModels),
-		OnlineCount:      onlineCount,
+		Shell:                 shell,
+		Devices:               views,
+		Metrics:               metrics,
+		FilteredCount:         devicePage.FilteredCount,
+		Query:                 query,
+		Pagination:            devicePaginationView(r.URL.Path, shell.SelectedOrganisationID, query, devicePage.Pagination),
+		HasQuery:              hasQuery,
+		IsEmptyUnfiltered:     !hasQuery && metrics.TotalDevices == 0,
+		IsEmptyFiltered:       hasQuery && devicePage.FilteredCount == 0,
+		DeviceInventoryLabel:  inventoryLabel,
+		DeviceInventorySuffix: inventorySuffix,
 	})
 }
 
@@ -1914,7 +1949,7 @@ func (s *Server) releaseViews(ctx context.Context, organisationID int64) ([]rele
 
 	views := make([]releaseView, 0, len(releases))
 	for _, release := range releases {
-		status, err := s.store.ReleaseCVEImpactStatus(ctx, organisationID, release.ID)
+		status, err := s.store.ReleaseCVESummary(ctx, organisationID, release.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -3286,6 +3321,52 @@ func releaseBinaryURLPath(releaseID int64, organisationID int64) string {
 
 func releaseDetailURL(releaseID int64, organisationID int64) string {
 	return "/releases/" + strconv.FormatInt(releaseID, 10) + "?organisation_id=" + strconv.FormatInt(organisationID, 10)
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 1 {
+		return fallback
+	}
+	return parsed
+}
+
+func devicePaginationView(path string, organisationID int64, query string, pagination db.Pagination) paginationView {
+	view := paginationView{
+		Page:       pagination.Page,
+		PageSize:   pagination.PageSize,
+		TotalRows:  pagination.TotalRows,
+		TotalPages: pagination.TotalPages,
+		HasPrev:    pagination.Page > 1,
+		HasNext:    pagination.Page < pagination.TotalPages,
+		PageSizes:  []int{25, 50, 100},
+	}
+	if pagination.TotalRows > 0 {
+		view.RangeStart = pagination.Offset + 1
+		view.RangeEnd = pagination.Offset + pagination.PageSize
+		if view.RangeEnd > pagination.TotalRows {
+			view.RangeEnd = pagination.TotalRows
+		}
+	}
+	if view.HasPrev {
+		view.PrevURL = devicePageURL(path, organisationID, query, pagination.Page-1, pagination.PageSize)
+	}
+	if view.HasNext {
+		view.NextURL = devicePageURL(path, organisationID, query, pagination.Page+1, pagination.PageSize)
+	}
+	return view
+}
+
+func devicePageURL(path string, organisationID int64, query string, page int, pageSize int) string {
+	values := url.Values{}
+	values.Set("organisation_id", strconv.FormatInt(organisationID, 10))
+	query = strings.TrimSpace(query)
+	if query != "" {
+		values.Set("q", query)
+	}
+	values.Set("page", strconv.Itoa(page))
+	values.Set("page_size", strconv.Itoa(pageSize))
+	return path + "?" + values.Encode()
 }
 
 func deviceModelDetailURL(modelID int64, organisationID int64) string {

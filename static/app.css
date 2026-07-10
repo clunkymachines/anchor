@@ -470,6 +470,7 @@ a {
 
 .search-field {
   position: relative;
+  margin: 0;
 }
 
 .search-field span {
@@ -1002,6 +1003,54 @@ a {
 
 .data-table tbody tr:hover {
   background: var(--surface-panel-muted);
+}
+
+.table-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.pagination-summary,
+.pagination-page {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.pagination-controls,
+.page-size-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.button.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.page-size-form {
+  margin: 0;
+}
+
+.page-size-form label span {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.page-size-form select {
+  height: 34px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-panel);
+  color: var(--text-primary);
 }
 
 .table-link {

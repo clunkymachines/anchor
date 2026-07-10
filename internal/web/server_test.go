@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"html/template"
 	"mime/multipart"
 	"net/http"
@@ -585,6 +586,105 @@ func TestDeviceCVEStatusShownOnListAndDetail(t *testing.T) {
 		if !strings.Contains(detailBody, expected) {
 			t.Fatalf("expected device detail to contain %q, got %q", expected, detailBody)
 		}
+	}
+}
+
+func TestDevicesPagePaginationSearchAndMetrics(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{
+		Email:        "member@example.com",
+		Name:         "Member",
+		PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
+		UserID:         userID,
+		OrganisationID: organisationID,
+	}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	modelID := testDeviceModelID(t, store, organisationID, "Sensor")
+	for i := 1; i <= 30; i++ {
+		deviceID := fmt.Sprintf("device-%02d", i)
+		if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+			Device: domain.Device{
+				ID:               deviceID,
+				OrganisationID:   organisationID,
+				DeviceModelID:    modelID,
+				SoftwareVersions: domain.SoftwareVersions{},
+			},
+			Credential: domain.DeviceMQTTCredential{
+				DeviceID:     deviceID,
+				Username:     fmt.Sprintf("field-%02d", i),
+				PasswordHash: "hash",
+				Enabled:      true,
+			},
+		}); err != nil {
+			t.Fatalf("save device %s: %v", deviceID, err)
+		}
+	}
+
+	server := testServerWithTemplates(t, store)
+	user := domain.User{ID: userID, Email: "member@example.com"}
+	req := httptest.NewRequest(http.MethodGet, "/devices?organisation_id="+strconv.FormatInt(organisationID, 10)+"&page_size=25", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, user))
+	res := httptest.NewRecorder()
+	server.devices(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected devices page, got %d body=%q", res.Code, res.Body.String())
+	}
+	body := res.Body.String()
+	for _, expected := range []string{
+		"Total devices",
+		">30<",
+		"Showing <span class=\"value-mono\">1-25</span> of <span class=\"value-mono\">30</span>",
+		"Page 1 of 2",
+		"page=2&amp;page_size=25",
+		`name="page_size" value="25"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected devices page to contain %q, got %q", expected, body)
+		}
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/devices?organisation_id="+strconv.FormatInt(organisationID, 10)+"&q=no-match&page=4&page_size=25", nil)
+	searchReq = searchReq.WithContext(context.WithValue(searchReq.Context(), userContextKey, user))
+	searchRes := httptest.NewRecorder()
+	server.devices(searchRes, searchReq)
+	if searchRes.Code != http.StatusOK {
+		t.Fatalf("expected searched devices page, got %d body=%q", searchRes.Code, searchRes.Body.String())
+	}
+	searchBody := searchRes.Body.String()
+	for _, expected := range []string{
+		`value="no-match"`,
+		"0 matching devices",
+		"from 30 registered",
+		"No devices match this search.",
+		"Page 1 of 1",
+	} {
+		if !strings.Contains(searchBody, expected) {
+			t.Fatalf("expected searched devices page to contain %q, got %q", expected, searchBody)
+		}
+	}
+	if strings.Contains(searchBody, `name="page"`) {
+		t.Fatalf("expected search form to reset page instead of preserving it, got %q", searchBody)
 	}
 }
 
