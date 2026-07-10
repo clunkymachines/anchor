@@ -185,11 +185,11 @@ func TestHandlePublishUpdatesTaskStatus(t *testing.T) {
 	}
 
 	taskID, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-001",
-		Type:      "fota",
-		Parameter: "1",
-		Status:    db.DeviceTaskStatusPending,
-		CreatedAt: "2026-06-06T08:00:00Z",
+		DeviceID:       "device-001",
+		Type:           "fota",
+		ParametersJSON: `{"release_id":1}`,
+		Status:         db.DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-06T08:00:00Z",
 	}, organisationID)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -208,8 +208,15 @@ func TestHandlePublishUpdatesTaskStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list ongoing tasks: %v", err)
 	}
-	if len(tasks) != 1 || tasks[0].ID != taskID || tasks[0].Status != db.DeviceTaskStatusInProgress {
+	if len(tasks) != 1 || tasks[0].ID != taskID || tasks[0].Status != db.DeviceTaskStatusInProgress || tasks[0].StatusMessage != "downloading" {
 		t.Fatalf("expected task in progress, got %#v", tasks)
+	}
+	properties, err := store.ListDeviceTwinProperties(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("list twin properties: %v", err)
+	}
+	if len(properties) != 0 {
+		t.Fatalf("expected task status update to stay out of telemetry, got %#v", properties)
 	}
 
 	client.handlePublish(ctx, &paho.Publish{
@@ -233,13 +240,13 @@ func TestDeviceTaskPublishBuildsCBORDocument(t *testing.T) {
 	t.Parallel()
 
 	publish, err := deviceTaskPublish(42, domain.DeviceTask{
-		ID:        7,
-		DeviceID:  "device-001",
-		Type:      "fota",
-		Parameter: "/org/42/releases/9/binary",
-		Status:    db.DeviceTaskStatusPending,
-		CreatedAt: "2026-06-06T08:00:00Z",
-	}, 1)
+		ID:             7,
+		DeviceID:       "device-001",
+		Type:           "fota",
+		ParametersJSON: `{"release_id":9}`,
+		Status:         db.DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-06T08:00:00Z",
+	}, "https://anchor.example.com", 1)
 	if err != nil {
 		t.Fatalf("build publish: %v", err)
 	}
@@ -252,7 +259,8 @@ func TestDeviceTaskPublishBuildsCBORDocument(t *testing.T) {
 		t.Fatalf("decode publish payload: %v", err)
 	}
 	payload = normalizeDecodedValue(payload).(map[string]any)
-	if payload["task"] != int64(7) || payload["type"] != "fota" || payload["parameter"] != "/org/42/releases/9/binary" || payload["status"] != "pending" {
+	parameters, _ := payload["parameters"].(map[string]any)
+	if payload["task"] != int64(7) || payload["type"] != "fota" || parameters["url"] != "https://anchor.example.com/org/42/releases/9/binary" || payload["status"] != "pending" {
 		t.Fatalf("unexpected publish payload: %#v", payload)
 	}
 }

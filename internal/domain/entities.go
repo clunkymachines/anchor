@@ -207,12 +207,14 @@ type DeviceTask struct {
 	ID int64
 	// DeviceID identifies the device this task targets.
 	DeviceID string
-	// Type is the task kind: read, write, exec, or fota.
+	// Type is the task kind: read, write, or fota.
 	Type string
-	// Parameter is an optional freeform task argument, limited to 256 characters.
-	Parameter string
+	// ParametersJSON stores validated, protocol-neutral task intent.
+	ParametersJSON string
 	// Status is pending, in_progress, success, failure, or canceled.
 	Status string
+	// StatusMessage is the latest optional device-reported task message.
+	StatusMessage string
 	// CreatedAt is when the task was created.
 	CreatedAt string
 	// CompletedAt is set when the task reaches a terminal status.

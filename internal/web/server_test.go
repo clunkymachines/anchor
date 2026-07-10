@@ -88,7 +88,7 @@ func TestDeviceHandlersRejectOrganisationsOutsideUserMembership(t *testing.T) {
 	form := url.Values{
 		"organisation_id": {strconv.FormatInt(forbiddenOrgID, 10)},
 		"task_type":       {"read"},
-		"task_parameter":  {"battery"},
+		"read_paths":      {"battery"},
 	}
 	taskReq := httptest.NewRequest(http.MethodPost, "/devices/forbidden-device/tasks", strings.NewReader(form.Encode()))
 	taskReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -125,7 +125,7 @@ func TestDeviceHandlersRejectOrganisationsOutsideUserMembership(t *testing.T) {
 	}
 }
 
-func TestDeviceTaskPostCreatesFOTATaskWithReleaseBinaryPath(t *testing.T) {
+func TestDeviceTaskPostCreatesFOTATaskWithReleaseID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -208,14 +208,14 @@ func TestDeviceTaskPostCreatesFOTATaskWithReleaseBinaryPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	expectedParameter := "https://firmware.example.com/downloads" + releaseBinaryURLPath(releaseID, organisationID)
-	if len(tasks) != 1 || tasks[0].Type != "fota" || tasks[0].Parameter != expectedParameter {
+	expectedParameters := `{"release_id":` + strconv.FormatInt(releaseID, 10) + `}`
+	if len(tasks) != 1 || tasks[0].Type != "fota" || tasks[0].ParametersJSON != expectedParameters {
 		t.Fatalf("unexpected FOTA task: %#v", tasks)
 	}
 
 	select {
 	case published := <-publisher.tasks:
-		if published.organisationID != organisationID || published.task.ID != tasks[0].ID || published.task.Type != "fota" || published.task.Parameter != expectedParameter {
+		if published.organisationID != organisationID || published.task.ID != tasks[0].ID || published.task.Type != "fota" || published.task.ParametersJSON != expectedParameters {
 			t.Fatalf("unexpected published task: %#v", published)
 		}
 	case <-time.After(time.Second):
@@ -902,11 +902,11 @@ func TestDeviceTaskCancelPostCancelsOngoingTask(t *testing.T) {
 		t.Fatalf("save device: %v", err)
 	}
 	taskID, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-001",
-		Type:      "fota",
-		Parameter: "/org/1/releases/1/binary",
-		Status:    db.DeviceTaskStatusPending,
-		CreatedAt: "2026-06-07T08:00:00Z",
+		DeviceID:       "device-001",
+		Type:           "fota",
+		ParametersJSON: `{"release_id":1}`,
+		Status:         db.DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-07T08:00:00Z",
 	}, organisationID)
 	if err != nil {
 		t.Fatalf("create task: %v", err)

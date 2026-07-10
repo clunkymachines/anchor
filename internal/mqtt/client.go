@@ -22,11 +22,12 @@ const DataTopicFilter = "dev/+/+/data"
 
 // Config contains the broker connection settings for Anchor's internal MQTT client.
 type Config struct {
-	BrokerURL string
-	ClientID  string
-	Username  string
-	Password  string
-	QoS       byte
+	BrokerURL           string
+	ClientID            string
+	Username            string
+	Password            string
+	QoS                 byte
+	FOTADownloadBaseURL string
 }
 
 // Client owns Anchor's internal MQTT connection.
@@ -178,24 +179,24 @@ func (c *Client) handlePublish(ctx context.Context, publish *paho.Publish) {
 		if event.ContentFormat == "" {
 			event.ContentFormat = decoded.format
 		}
-		c.updateTaskStatus(ctx, deviceID, organisationID, decoded.value)
-
-		updates, err := flattenPayload(decoded.value)
-		if err != nil {
-			c.logger.Warn("mqtt client payload flatten failed", "topic", publish.Topic, "err", err)
-		} else {
-			properties = make([]domain.DeviceTwinProperty, 0, len(updates))
-			for _, update := range updates {
-				properties = append(properties, domain.DeviceTwinProperty{
-					DeviceID:     deviceID,
-					Path:         update.path,
-					ValueJSON:    update.valueJSON,
-					ValueType:    update.valueType,
-					TSObservedMS: nowMS,
-					TSReceivedMS: nowMS,
-					Protocol:     "mqtt",
-					SourcePath:   publish.Topic,
-				})
+		if !c.updateTaskStatus(ctx, deviceID, organisationID, decoded.value) {
+			updates, err := flattenPayload(decoded.value)
+			if err != nil {
+				c.logger.Warn("mqtt client payload flatten failed", "topic", publish.Topic, "err", err)
+			} else {
+				properties = make([]domain.DeviceTwinProperty, 0, len(updates))
+				for _, update := range updates {
+					properties = append(properties, domain.DeviceTwinProperty{
+						DeviceID:     deviceID,
+						Path:         update.path,
+						ValueJSON:    update.valueJSON,
+						ValueType:    update.valueType,
+						TSObservedMS: nowMS,
+						TSReceivedMS: nowMS,
+						Protocol:     "mqtt",
+						SourcePath:   publish.Topic,
+					})
+				}
 			}
 		}
 	}
@@ -206,10 +207,10 @@ func (c *Client) handlePublish(ctx context.Context, publish *paho.Publish) {
 }
 
 // updateTaskStatus applies device-reported task progress from a decoded payload.
-func (c *Client) updateTaskStatus(ctx context.Context, deviceID string, organisationID int64, value any) {
+func (c *Client) updateTaskStatus(ctx context.Context, deviceID string, organisationID int64, value any) bool {
 	update, ok := taskStatusFromPayload(value)
 	if !ok {
-		return
+		return false
 	}
 
 	completedAt := ""
@@ -217,14 +218,15 @@ func (c *Client) updateTaskStatus(ctx context.Context, deviceID string, organisa
 		completedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	if err := c.store.UpdateDeviceTaskStatus(ctx, update.taskID, deviceID, organisationID, update.status, completedAt); err != nil {
+	if err := c.store.UpdateDeviceTaskStatus(ctx, update.taskID, deviceID, organisationID, update.status, completedAt, update.message); err != nil {
 		c.logger.Warn("mqtt client task status update failed", "device_id", deviceID, "organisation_id", organisationID, "task", update.taskID, "status", update.status, "err", err)
-		return
+		return true
 	}
 
 	if update.message != "" {
 		c.logger.Info("mqtt client task status updated", "device_id", deviceID, "organisation_id", organisationID, "task", update.taskID, "status", update.status, "msg", update.message)
 	}
+	return true
 }
 
 type taskStatusUpdate struct {

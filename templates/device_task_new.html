@@ -1,0 +1,85 @@
+{{template "app_page_start" (dict "Title" (printf "Launch task - %s - Anchor" .Device.ID) "Shell" .Shell "Active" "devices" "OrganisationAction" (printf "/devices/%s/tasks/new" .Device.ID) "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Launch task</h1>
+							<p class="page-subtitle">{{.Device.ID}}</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/devices/{{.Device.ID}}?organisation_id={{.Device.OrganisationID}}">Back to device</a>
+						</div>
+					</header>
+
+					{{if .TaskFormError}}
+						<p class="form-error">{{.TaskFormError}}</p>
+					{{end}}
+
+					<div class="task-launch-grid">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Read</h2>
+									<p class="card-subtitle">Request current twin values from the device</p>
+								</div>
+							</header>
+							<form class="card-body device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks">
+								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+								<input type="hidden" name="task_type" value="read">
+								<label class="field">
+									<span class="field-label">Paths</span>
+									<textarea class="textarea task-textarea" name="read_paths" required placeholder="battery.percent&#10;firmware.version">{{.ReadPaths}}</textarea>
+								</label>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Launch read</button>
+								</div>
+							</form>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Write</h2>
+									<p class="card-subtitle">Send typed JSON values to device paths</p>
+								</div>
+							</header>
+							<form class="card-body device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks">
+								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+								<input type="hidden" name="task_type" value="write">
+								<label class="field">
+									<span class="field-label">Values</span>
+									<textarea class="textarea task-textarea task-json-textarea" name="write_values" required>{{.WriteValues}}</textarea>
+								</label>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Launch write</button>
+								</div>
+							</form>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">FOTA</h2>
+									<p class="card-subtitle">Ask the device to download a release</p>
+								</div>
+							</header>
+							<form class="card-body device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks">
+								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+								<input type="hidden" name="task_type" value="fota">
+								<label class="field">
+									<span class="field-label">Release</span>
+									<select class="select" name="release_id" required {{if not .Releases}}disabled{{end}}>
+										{{range .Releases}}
+											<option value="{{.ID}}">{{.Label}}</option>
+										{{else}}
+											<option>No releases available</option>
+										{{end}}
+									</select>
+								</label>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit" {{if not .Releases}}disabled{{end}}>Launch FOTA</button>
+								</div>
+							</form>
+						</section>
+					</div>
+				</main>
+{{template "app_page_end" .}}

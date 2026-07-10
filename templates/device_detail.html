@@ -182,47 +182,8 @@
 			<h2 class="card-title">Tasks</h2>
 			<p class="card-subtitle">{{len .ActiveAndRecentTasks}} active and recent tasks</p>
 		</div>
-		<button class="button button-primary" type="button" data-task-launch-open>Launch task</button>
+		<a class="button button-primary" href="/devices/{{.Device.ID}}/tasks/new?organisation_id={{.Device.OrganisationID}}">Launch task</a>
 	</header>
-	<div class="card-body">
-		<div class="task-launch-panel {{if not .TaskFormError}}is-hidden{{end}}" data-task-launch-panel>
-			{{if .TaskFormError}}
-				<p class="form-error">{{.TaskFormError}}</p>
-			{{end}}
-			<div class="task-kind-grid" role="tablist" aria-label="Task type">
-				<button class="task-kind-button" type="button" data-task-kind="read">Read</button>
-				<button class="task-kind-button" type="button" data-task-kind="write">Write</button>
-				<button class="task-kind-button" type="button" data-task-kind="exec">Execute</button>
-				<button class="task-kind-button is-active" type="button" data-task-kind="fota">FOTA</button>
-			</div>
-			<div class="task-kind-form is-hidden" data-task-form="read">
-				<div class="task-placeholder">Read task launch is not implemented yet.</div>
-			</div>
-			<div class="task-kind-form is-hidden" data-task-form="write">
-				<div class="task-placeholder">Write task launch is not implemented yet.</div>
-			</div>
-			<div class="task-kind-form is-hidden" data-task-form="exec">
-				<div class="task-placeholder">Execute task launch is not implemented yet.</div>
-			</div>
-			<form class="task-kind-form device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks" data-task-form="fota">
-				<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
-				<input type="hidden" name="task_type" value="fota">
-				<label class="field">
-					<span class="field-label">Release</span>
-					<select class="select" name="release_id" required {{if not .Releases}}disabled{{end}}>
-						{{range .Releases}}
-							<option value="{{.ID}}">{{.Label}}</option>
-						{{else}}
-							<option>No releases available</option>
-						{{end}}
-					</select>
-				</label>
-				<div class="form-actions">
-					<button class="button button-primary" type="submit" {{if not .Releases}}disabled{{end}}>Launch FOTA</button>
-				</div>
-			</form>
-		</div>
-	</div>
 
 	<div class="data-table-wrapper">
 		<table class="data-table">
@@ -230,8 +191,9 @@
 				<tr>
 					<th scope="col">ID</th>
 					<th scope="col">Type</th>
-					<th scope="col">Parameter</th>
+					<th scope="col">Task</th>
 					<th scope="col">Status</th>
+					<th scope="col">Message</th>
 					<th scope="col">Created</th>
 					<th scope="col">Completed</th>
 					<th scope="col">Actions</th>
@@ -243,9 +205,12 @@
 						<td class="value-mono">{{.ID}}</td>
 						<td>{{.Type}}</td>
 						<td class="value-mono table-cell-wrap">
-							{{if .Parameter}}{{.Parameter}}{{else}}<span class="muted-text">None</span>{{end}}
+							{{.Summary}}
 						</td>
 						<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
+						<td class="table-cell-wrap">
+							{{if .StatusMessage}}{{.StatusMessage}}{{else}}<span class="muted-text">None</span>{{end}}
+						</td>
 						<td class="value-mono">{{localTime .CreatedAt}}</td>
 						<td class="value-mono">
 							{{if .CompletedAt}}{{localTime .CompletedAt}}{{else}}<span class="muted-text">Not completed</span>{{end}}
@@ -267,7 +232,7 @@
 					</tr>
 				{{else}}
 					<tr>
-						<td class="empty-table-cell" colspan="7">No tasks.</td>
+						<td class="empty-table-cell" colspan="8">No tasks.</td>
 					</tr>
 				{{end}}
 			</tbody>

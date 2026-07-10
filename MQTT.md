@@ -65,23 +65,61 @@ dev/{orgID}/{deviceID}/task
 
 Task payloads are CBOR maps with MQTT content type `application/cbor`.
 
-Example decoded FOTA task:
+Example decoded read task:
 
 ```cbor
 {
   "task": 7,
-  "type": "fota",
-  "parameter": "https://anchor.example.com/org/42/releases/9/binary",
+  "type": "read",
+  "parameters": {
+    "paths": [
+      "battery.percent",
+      "firmware.version"
+    ]
+  },
   "status": "pending",
   "created_at": "2026-06-06T17:30:14Z"
+}
+```
+
+Example decoded write task:
+
+```cbor
+{
+  "task": 8,
+  "type": "write",
+  "parameters": {
+    "values": [
+      {
+        "path": "config.sample_interval",
+        "value": 60
+      }
+    ]
+  },
+  "status": "pending",
+  "created_at": "2026-06-06T17:31:14Z"
+}
+```
+
+Example decoded FOTA task:
+
+```cbor
+{
+  "task": 9,
+  "type": "fota",
+  "parameters": {
+    "url": "https://anchor.example.com/org/42/releases/9/binary"
+  },
+  "status": "pending",
+  "created_at": "2026-06-06T17:32:14Z"
 }
 ```
 
 Fields:
 
 - `task`: Anchor task ID. Devices must include this in status updates.
-- `type`: Task kind. Currently the UI launches `fota` tasks.
-- `parameter`: Task-specific argument. For FOTA, this is the firmware binary download URL.
+- `type`: Task kind: `read`, `write`, or `fota`.
+- `parameters`: Task-specific object. Read tasks carry `paths`, write tasks carry typed JSON `values`, and FOTA tasks carry a firmware download `url`.
 - `status`: Initial task status, usually `pending`.
 - `created_at`: RFC3339 creation time.
 
@@ -96,6 +134,8 @@ If unset, Anchor sends a relative path such as:
 ```text
 /org/42/releases/9/binary
 ```
+
+Read task values are reported as normal telemetry on `dev/{orgID}/{deviceID}/data`. Task status remains a separate device-reported update.
 
 ## Task Status Updates
 
@@ -142,7 +182,7 @@ Allowed device-reported statuses:
 - `success`
 - `failure`
 
-`msg` is optional. Use it for progress logs or error details.
+`msg` is optional. Anchor stores the latest message, capped at 512 characters, for display with the task status.
 
 Terminal states do not regress. Once a task reaches `success`, `failure`, or `canceled`, later status messages for the same task do not reopen it.
 
@@ -267,7 +307,7 @@ For a gateway device:
 2. Device subscribes to `dev/{orgID}/{deviceID}/task`.
 3. Anchor republishes any pending tasks for that device.
 4. Anchor creates a FOTA task and publishes a CBOR task document to the task topic.
-5. Device downloads the firmware package from the `parameter` URL.
+5. Device downloads the firmware package from `parameters.url`.
 6. Device publishes status updates to `dev/{orgID}/{deviceID}/data`.
 7. Anchor updates the task status and refreshes the device detail UI in realtime.
 

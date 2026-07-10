@@ -869,54 +869,22 @@ a {
 .device-task-form {
   display: grid;
   gap: 14px;
-  margin-bottom: 18px;
 }
 
-.task-launch-panel {
+.task-launch-grid {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
-  margin-bottom: 18px;
-  padding: 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--surface-panel-muted);
+  align-items: start;
 }
 
-.task-kind-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+.task-textarea {
+  min-height: 140px;
 }
 
-.task-kind-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 38px;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--surface-panel);
-  color: var(--text-secondary);
+.task-json-textarea {
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
-  font-weight: 700;
-}
-
-.task-kind-button.is-active {
-  border-color: var(--action-primary);
-  color: var(--action-primary);
-}
-
-.task-kind-form {
-  display: grid;
-  gap: 14px;
-}
-
-.task-placeholder {
-  padding: 12px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 8px;
-  color: var(--text-muted);
 }
 
 .form-grid {
@@ -1374,16 +1342,13 @@ a {
   .grid-cols-2,
   .grid-cols-3,
   .grid-cols-4,
-  .device-detail-top-grid {
+  .device-detail-top-grid,
+  .task-launch-grid {
     grid-template-columns: 1fr;
   }
 
   .form-grid {
     grid-template-columns: 1fr;
-  }
-
-  .task-kind-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .field-wide {

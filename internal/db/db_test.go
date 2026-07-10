@@ -125,8 +125,9 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"id",
 		"device_id",
 		"task_type",
-		"parameter",
+		"parameters_json",
 		"status",
+		"status_message",
 		"created_at",
 		"completed_at",
 	})
@@ -1302,11 +1303,11 @@ func TestDeviceTaskSubscriptionsArePerDevice(t *testing.T) {
 	defer unsubscribeB()
 
 	if _, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-a",
-		Type:      "fota",
-		Parameter: "/org/1/releases/1/binary",
-		Status:    DeviceTaskStatusPending,
-		CreatedAt: "2026-06-06T08:00:00Z",
+		DeviceID:       "device-a",
+		Type:           "fota",
+		ParametersJSON: `{"release_id":1}`,
+		Status:         DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-06T08:00:00Z",
 	}, organisationID); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -1361,39 +1362,39 @@ func TestCreateAndListOngoingDeviceTasks(t *testing.T) {
 	}
 
 	readID, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-001",
-		Type:      "read",
-		Parameter: "battery",
-		Status:    DeviceTaskStatusPending,
-		CreatedAt: "2026-06-04T08:00:00Z",
+		DeviceID:       "device-001",
+		Type:           "read",
+		ParametersJSON: `{"paths":["battery"]}`,
+		Status:         DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-04T08:00:00Z",
 	}, organisationID)
 	if err != nil {
 		t.Fatalf("create read task: %v", err)
 	}
 	writeID, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-001",
-		Type:      "write",
-		Parameter: "led=on",
-		Status:    DeviceTaskStatusInProgress,
-		CreatedAt: "2026-06-04T08:01:00Z",
+		DeviceID:       "device-001",
+		Type:           "write",
+		ParametersJSON: `{"values":[{"path":"led","value":"on"}]}`,
+		Status:         DeviceTaskStatusInProgress,
+		CreatedAt:      "2026-06-04T08:01:00Z",
 	}, organisationID)
 	if err != nil {
 		t.Fatalf("create write task: %v", err)
 	}
 	completedID, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-001",
-		Type:      "exec",
-		Parameter: "reboot",
-		Status:    DeviceTaskStatusPending,
-		CreatedAt: "2026-06-04T08:02:00Z",
+		DeviceID:       "device-001",
+		Type:           "fota",
+		ParametersJSON: `{"release_id":1}`,
+		Status:         DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-04T08:02:00Z",
 	}, organisationID)
 	if err != nil {
-		t.Fatalf("create exec task: %v", err)
+		t.Fatalf("create completed task: %v", err)
 	}
-	if err := store.UpdateDeviceTaskStatus(ctx, completedID, "device-001", organisationID, DeviceTaskStatusSuccess, "2026-06-04T08:03:00Z"); err != nil {
+	if err := store.UpdateDeviceTaskStatus(ctx, completedID, "device-001", organisationID, DeviceTaskStatusSuccess, "2026-06-04T08:03:00Z", "done"); err != nil {
 		t.Fatalf("complete task: %v", err)
 	}
-	if err := store.UpdateDeviceTaskStatus(ctx, completedID, "device-001", organisationID, DeviceTaskStatusInProgress, ""); !errors.Is(err, ErrNotFound) {
+	if err := store.UpdateDeviceTaskStatus(ctx, completedID, "device-001", organisationID, DeviceTaskStatusInProgress, "", "again"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected terminal task regression to be rejected, got %v", err)
 	}
 
@@ -1407,7 +1408,7 @@ func TestCreateAndListOngoingDeviceTasks(t *testing.T) {
 	if tasks[0].ID != writeID || tasks[0].Status != DeviceTaskStatusInProgress {
 		t.Fatalf("expected newest in-progress task first, got %#v", tasks[0])
 	}
-	if tasks[1].ID != readID || tasks[1].Parameter != "battery" {
+	if tasks[1].ID != readID || tasks[1].ParametersJSON != `{"paths":["battery"]}` {
 		t.Fatalf("expected pending read task second, got %#v", tasks[1])
 	}
 
@@ -1461,11 +1462,11 @@ func TestListActiveAndRecentDeviceTasksIncludesLastThreeFinished(t *testing.T) {
 	}
 
 	activeID, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-001",
-		Type:      "fota",
-		Parameter: "active",
-		Status:    DeviceTaskStatusPending,
-		CreatedAt: "2026-06-07T08:10:00Z",
+		DeviceID:       "device-001",
+		Type:           "fota",
+		ParametersJSON: `{"release_id":1}`,
+		Status:         DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-07T08:10:00Z",
 	}, organisationID)
 	if err != nil {
 		t.Fatalf("create active task: %v", err)
@@ -1474,16 +1475,16 @@ func TestListActiveAndRecentDeviceTasksIncludesLastThreeFinished(t *testing.T) {
 	var finishedIDs []int64
 	for i := 1; i <= 4; i++ {
 		id, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-			DeviceID:  "device-001",
-			Type:      "fota",
-			Parameter: fmt.Sprintf("finished-%d", i),
-			Status:    DeviceTaskStatusPending,
-			CreatedAt: fmt.Sprintf("2026-06-07T08:0%d:00Z", i),
+			DeviceID:       "device-001",
+			Type:           "fota",
+			ParametersJSON: fmt.Sprintf(`{"release_id":%d}`, i),
+			Status:         DeviceTaskStatusPending,
+			CreatedAt:      fmt.Sprintf("2026-06-07T08:0%d:00Z", i),
 		}, organisationID)
 		if err != nil {
 			t.Fatalf("create finished task %d: %v", i, err)
 		}
-		if err := store.UpdateDeviceTaskStatus(ctx, id, "device-001", organisationID, DeviceTaskStatusSuccess, fmt.Sprintf("2026-06-07T08:1%d:00Z", i)); err != nil {
+		if err := store.UpdateDeviceTaskStatus(ctx, id, "device-001", organisationID, DeviceTaskStatusSuccess, fmt.Sprintf("2026-06-07T08:1%d:00Z", i), "done"); err != nil {
 			t.Fatalf("finish task %d: %v", i, err)
 		}
 		finishedIDs = append(finishedIDs, id)
@@ -1544,10 +1545,11 @@ func TestCreateDeviceTaskRequiresMatchingOrganisation(t *testing.T) {
 	}
 
 	_, err = store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:  "device-001",
-		Type:      "read",
-		Status:    DeviceTaskStatusPending,
-		CreatedAt: "2026-06-04T08:00:00Z",
+		DeviceID:       "device-001",
+		Type:           "read",
+		ParametersJSON: `{"paths":["battery"]}`,
+		Status:         DeviceTaskStatusPending,
+		CreatedAt:      "2026-06-04T08:00:00Z",
 	}, otherOrganisationID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for wrong organisation, got %v", err)

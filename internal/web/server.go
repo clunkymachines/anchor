@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -108,8 +109,15 @@ type deviceDetailPageData struct {
 	TwinProperties       []twinPropertyView
 	RecentEvents         []deviceEventView
 	ActiveAndRecentTasks []deviceTaskView
-	Releases             []releaseOptionView
-	TaskFormError        string
+}
+
+type deviceTaskLaunchPageData struct {
+	Shell         shellPageData
+	Device        deviceDetailView
+	Releases      []releaseOptionView
+	TaskFormError string
+	ReadPaths     string
+	WriteValues   string
 }
 
 type releasesPageData struct {
@@ -241,13 +249,14 @@ type deviceEventView struct {
 }
 
 type deviceTaskView struct {
-	ID          int64
-	Type        string
-	Parameter   string
-	Status      string
-	StatusClass string
-	CreatedAt   string
-	CompletedAt string
+	ID            int64
+	Type          string
+	Summary       string
+	Status        string
+	StatusClass   string
+	StatusMessage string
+	CreatedAt     string
+	CompletedAt   string
 }
 
 type releaseView struct {
@@ -390,6 +399,7 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("GET /devices/{deviceID}/events", server.requireAuth(http.HandlerFunc(server.deviceEvents)))
 	mux.Handle("GET /devices/{deviceID}/telemetry", server.requireAuth(http.HandlerFunc(server.deviceTelemetry)))
 	mux.Handle("GET /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTasks)))
+	mux.Handle("GET /devices/{deviceID}/tasks/new", server.requireAuth(http.HandlerFunc(server.deviceTaskNew)))
 	mux.Handle("POST /devices", server.requireAuth(http.HandlerFunc(server.devicesPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTaskPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.deviceTaskCancelPost)))
@@ -599,7 +609,7 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.loadDeviceDetailPageData(r.Context(), shell, deviceID, organisationID, "")
+	data, err := s.loadDeviceDetailPageData(r.Context(), shell, deviceID, organisationID)
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -685,11 +695,6 @@ func (s *Server) renderDeviceTasksForDevice(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "device tasks query error", http.StatusInternalServerError)
 		return
 	}
-	releases, err := s.loadReleaseOptions(r.Context(), organisationID)
-	if err != nil {
-		http.Error(w, "release query error", http.StatusInternalServerError)
-		return
-	}
 
 	s.renderDeviceTasks(w, deviceDetailPageData{
 		Device: deviceDetailView{
@@ -697,8 +702,37 @@ func (s *Server) renderDeviceTasksForDevice(w http.ResponseWriter, r *http.Reque
 			OrganisationID: organisationID,
 		},
 		ActiveAndRecentTasks: tasks,
-		Releases:             releases,
 	})
+}
+
+func (s *Server) deviceTaskNew(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.PathValue("deviceID")
+	if deviceID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		http.Error(w, "missing organisation id", http.StatusBadRequest)
+		return
+	}
+
+	data, err := s.loadDeviceTaskLaunchPageData(r.Context(), shell, deviceID, organisationID, "")
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "device task launch query error", http.StatusInternalServerError)
+		return
+	}
+
+	s.renderDeviceTaskNew(w, data)
 }
 
 func (s *Server) deviceEvents(w http.ResponseWriter, r *http.Request) {
@@ -852,32 +886,22 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskType := r.FormValue("task_type")
-	if taskType != "fota" {
-		s.renderDeviceDetailWithTaskError(w, r, shell, deviceID, organisationID, "Only FOTA task launch is available for now.")
-		return
-	}
-
-	releaseID, err := strconv.ParseInt(r.FormValue("release_id"), 10, 64)
-	if err != nil || releaseID <= 0 {
-		s.renderDeviceDetailWithTaskError(w, r, shell, deviceID, organisationID, "Choose a release for the FOTA task.")
-		return
-	}
-	release, ok, err := s.findReleaseOption(r.Context(), organisationID, releaseID)
+	parametersJSON, err := s.taskParametersFromForm(r, taskType, organisationID)
 	if err != nil {
-		http.Error(w, "release query error", http.StatusInternalServerError)
+		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, err.Error())
 		return
 	}
-	if !ok {
-		s.renderDeviceDetailWithTaskError(w, r, shell, deviceID, organisationID, "Choose a release from this organisation.")
+	if parametersJSON == "" {
+		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, "Choose a supported task type.")
 		return
 	}
 
 	task := domain.DeviceTask{
-		DeviceID:  deviceID,
-		Type:      "fota",
-		Parameter: s.fotaDownloadURL(release.ID, organisationID),
-		Status:    db.DeviceTaskStatusPending,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		DeviceID:       deviceID,
+		Type:           taskType,
+		ParametersJSON: parametersJSON,
+		Status:         db.DeviceTaskStatusPending,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	taskID, err := s.store.CreateDeviceTask(r.Context(), task, organisationID)
 	if errors.Is(err, db.ErrNotFound) {
@@ -892,6 +916,40 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 	s.publishDeviceTask(r.Context(), task, organisationID)
 
 	http.Redirect(w, r, "/devices/"+deviceID+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) taskParametersFromForm(r *http.Request, taskType string, organisationID int64) (string, error) {
+	switch taskType {
+	case domain.TaskTypeRead:
+		return domain.BuildReadTaskParameters(readTaskPathsFromForm(r.FormValue("read_paths")))
+	case domain.TaskTypeWrite:
+		return domain.BuildWriteTaskParameters(r.FormValue("write_values"))
+	case domain.TaskTypeFOTA:
+		releaseID, err := strconv.ParseInt(r.FormValue("release_id"), 10, 64)
+		if err != nil || releaseID <= 0 {
+			return "", errors.New("choose a release for the FOTA task")
+		}
+		if _, ok, err := s.findReleaseOption(r.Context(), organisationID, releaseID); err != nil {
+			return "", fmt.Errorf("release query error")
+		} else if !ok {
+			return "", errors.New("choose a release from this organisation")
+		}
+		return domain.BuildFOTATaskParameters(releaseID)
+	default:
+		return "", nil
+	}
+}
+
+func readTaskPathsFromForm(input string) []string {
+	lines := strings.Split(input, "\n")
+	paths := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return paths
 }
 
 func (s *Server) deviceTaskCancelPost(w http.ResponseWriter, r *http.Request) {
@@ -921,7 +979,7 @@ func (s *Server) deviceTaskCancelPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = s.store.UpdateDeviceTaskStatus(r.Context(), taskID, deviceID, organisationID, db.DeviceTaskStatusCanceled, time.Now().UTC().Format(time.RFC3339))
+	err = s.store.UpdateDeviceTaskStatus(r.Context(), taskID, deviceID, organisationID, db.DeviceTaskStatusCanceled, time.Now().UTC().Format(time.RFC3339), "")
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -939,18 +997,20 @@ func (s *Server) deviceTaskCancelPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/devices/"+deviceID+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
 
-func (s *Server) renderDeviceDetailWithTaskError(w http.ResponseWriter, r *http.Request, shell shellPageData, deviceID string, organisationID int64, message string) {
-	data, err := s.loadDeviceDetailPageData(r.Context(), shell, deviceID, organisationID, message)
+func (s *Server) renderDeviceTaskNewWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, deviceID string, organisationID int64, message string) {
+	data, err := s.loadDeviceTaskLaunchPageData(r.Context(), shell, deviceID, organisationID, message)
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		http.Error(w, "device detail query error", http.StatusInternalServerError)
+		http.Error(w, "device task launch query error", http.StatusInternalServerError)
 		return
 	}
+	data.ReadPaths = r.FormValue("read_paths")
+	data.WriteValues = r.FormValue("write_values")
 
-	s.renderDeviceDetail(w, data)
+	s.renderDeviceTaskNew(w, data)
 }
 
 func (s *Server) deviceDeletePost(w http.ResponseWriter, r *http.Request) {
@@ -2378,6 +2438,13 @@ func (s *Server) renderDeviceTasks(w http.ResponseWriter, data deviceDetailPageD
 	}
 }
 
+func (s *Server) renderDeviceTaskNew(w http.ResponseWriter, data deviceTaskLaunchPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "device_task_new.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
 func (s *Server) renderReleases(w http.ResponseWriter, data releasesPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "releases.html", data); err != nil {
@@ -2726,7 +2793,7 @@ func (s *Server) loadReleaseDetailPageData(ctx context.Context, shell shellPageD
 	}, nil
 }
 
-func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageData, deviceID string, organisationID int64, taskFormError string) (deviceDetailPageData, error) {
+func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageData, deviceID string, organisationID int64) (deviceDetailPageData, error) {
 	detail, err := s.store.DeviceDetail(ctx, deviceID, organisationID)
 	if err != nil {
 		return deviceDetailPageData{}, err
@@ -2755,7 +2822,6 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 			StatusClass:         connectivity.StatusClass,
 			LastSeen:            connectivity.LastSeen,
 		},
-		TaskFormError: taskFormError,
 	}
 	if cveStatus.MatchedReleaseID > 0 {
 		release, err := s.store.SoftwareRelease(ctx, cveStatus.MatchedReleaseID, organisationID)
@@ -2780,12 +2846,34 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 	if err != nil {
 		return deviceDetailPageData{}, err
 	}
-	data.Releases, err = s.loadReleaseOptions(ctx, organisationID)
+	return data, nil
+}
+
+func (s *Server) loadDeviceTaskLaunchPageData(ctx context.Context, shell shellPageData, deviceID string, organisationID int64, taskFormError string) (deviceTaskLaunchPageData, error) {
+	detail, err := s.store.DeviceDetail(ctx, deviceID, organisationID)
 	if err != nil {
-		return deviceDetailPageData{}, err
+		return deviceTaskLaunchPageData{}, err
+	}
+	connectivity := deviceConnectivity(detail.Device, time.Now())
+	releases, err := s.loadReleaseOptions(ctx, organisationID)
+	if err != nil {
+		return deviceTaskLaunchPageData{}, err
 	}
 
-	return data, nil
+	return deviceTaskLaunchPageData{
+		Shell: shell,
+		Device: deviceDetailView{
+			ID:             detail.Device.ID,
+			OrganisationID: detail.Device.OrganisationID,
+			ModelName:      detail.Device.ModelName,
+			Status:         connectivity.Status,
+			StatusClass:    connectivity.StatusClass,
+			LastSeen:       connectivity.LastSeen,
+		},
+		Releases:      releases,
+		TaskFormError: taskFormError,
+		WriteValues:   "[{\"path\":\"config.sample_interval\",\"value\":60}]",
+	}, nil
 }
 
 func (s *Server) loadDeviceTelemetry(ctx context.Context, deviceID string, organisationID int64) ([]twinPropertyView, []deviceEventView, error) {
@@ -2839,13 +2927,14 @@ func (s *Server) loadActiveAndRecentDeviceTasks(ctx context.Context, deviceID st
 	views := make([]deviceTaskView, 0, len(tasks))
 	for _, task := range tasks {
 		views = append(views, deviceTaskView{
-			ID:          task.ID,
-			Type:        task.Type,
-			Parameter:   task.Parameter,
-			Status:      formatDeviceTaskStatus(task.Status),
-			StatusClass: deviceTaskStatusClass(task.Status),
-			CreatedAt:   task.CreatedAt,
-			CompletedAt: task.CompletedAt,
+			ID:            task.ID,
+			Type:          task.Type,
+			Summary:       deviceTaskSummary(task),
+			Status:        formatDeviceTaskStatus(task.Status),
+			StatusClass:   deviceTaskStatusClass(task.Status),
+			StatusMessage: task.StatusMessage,
+			CreatedAt:     task.CreatedAt,
+			CompletedAt:   task.CompletedAt,
 		})
 	}
 
@@ -2868,6 +2957,39 @@ func (s *Server) loadReleaseOptions(ctx context.Context, organisationID int64) (
 		})
 	}
 	return options, nil
+}
+
+func deviceTaskSummary(task domain.DeviceTask) string {
+	switch task.Type {
+	case domain.TaskTypeRead:
+		var params domain.ReadTaskParameters
+		if err := json.Unmarshal([]byte(task.ParametersJSON), &params); err == nil && len(params.Paths) > 0 {
+			return summarizeStrings("Read", params.Paths)
+		}
+	case domain.TaskTypeWrite:
+		var params domain.WriteTaskParameters
+		if err := json.Unmarshal([]byte(task.ParametersJSON), &params); err == nil && len(params.Values) > 0 {
+			values := make([]string, 0, len(params.Values))
+			for _, value := range params.Values {
+				values = append(values, value.Path+" = "+string(value.Value))
+			}
+			return summarizeStrings("Write", values)
+		}
+	case domain.TaskTypeFOTA:
+		params, err := domain.ParseFOTATaskParameters(task.ParametersJSON)
+		if err == nil {
+			return "Release #" + strconv.FormatInt(params.ReleaseID, 10)
+		}
+	}
+	return "Invalid parameters"
+}
+
+func summarizeStrings(prefix string, values []string) string {
+	const maxShown = 3
+	if len(values) <= maxShown {
+		return prefix + " " + strings.Join(values, ", ")
+	}
+	return prefix + " " + strings.Join(values[:maxShown], ", ") + " +" + strconv.Itoa(len(values)-maxShown)
 }
 
 func deviceModelOption(model domain.DeviceModel) deviceModelOptionView {

@@ -43,14 +43,6 @@ document.addEventListener("click", (event) => {
     return;
   }
 
-  const launchButton = event.target.closest("[data-task-launch-open]");
-  if (launchButton) {
-    const panel = document.querySelector("[data-task-launch-panel]");
-    panel?.classList.remove("is-hidden");
-    panel?.querySelector('[data-task-kind="fota"]')?.focus();
-    return;
-  }
-
   const tabButton = event.target.closest("[data-tab-button]");
   if (tabButton) {
     const group = tabButton.closest("[data-tab-group]");
@@ -70,20 +62,6 @@ document.addEventListener("click", (event) => {
     return;
   }
 
-  const taskKind = event.target.closest("[data-task-kind]");
-  if (taskKind) {
-    const panel = taskKind.closest("[data-task-launch-panel]");
-    if (!panel) {
-      return;
-    }
-    const kind = taskKind.dataset.taskKind;
-    panel.querySelectorAll("[data-task-kind]").forEach((button) => {
-      button.classList.toggle("is-active", button === taskKind);
-    });
-    panel.querySelectorAll("[data-task-form]").forEach((form) => {
-      form.classList.toggle("is-hidden", form.dataset.taskForm !== kind);
-    });
-  }
 });
 
 document.addEventListener("keydown", (event) => {

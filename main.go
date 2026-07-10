@@ -111,11 +111,12 @@ func mqttConfigFromEnv() (mqtt.Config, bool, error) {
 	}
 
 	return mqtt.Config{
-		BrokerURL: brokerURL,
-		ClientID:  clientID,
-		Username:  username,
-		Password:  password,
-		QoS:       qos,
+		BrokerURL:           brokerURL,
+		ClientID:            clientID,
+		Username:            username,
+		Password:            password,
+		QoS:                 qos,
+		FOTADownloadBaseURL: os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"),
 	}, true, nil
 }
 

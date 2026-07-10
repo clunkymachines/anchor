@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"anchor/internal/domain"
 )
@@ -21,18 +22,22 @@ func (s *Store) CreateDeviceTask(ctx context.Context, task domain.DeviceTask, or
 	if task.Status == "" {
 		task.Status = DeviceTaskStatusPending
 	}
+	if strings.TrimSpace(task.ParametersJSON) == "" {
+		return 0, fmt.Errorf("device task parameters_json is required")
+	}
 
 	switch s.dialect {
 	case DialectSQLite:
 		result, err := s.writeDB.ExecContext(ctx, `
-			INSERT INTO device_tasks (device_id, task_type, parameter, status, created_at)
-			SELECT d.id, ?, ?, ?, ?
+			INSERT INTO device_tasks (device_id, task_type, parameters_json, status, status_message, created_at)
+			SELECT d.id, ?, ?, ?, ?, ?
 			FROM devices d
 			WHERE d.id = ? AND d.organisation_id = ?
 		`,
 			task.Type,
-			nullableTaskParameter(task.Parameter),
+			task.ParametersJSON,
 			task.Status,
+			nullableStatusMessage(task.StatusMessage),
 			task.CreatedAt,
 			task.DeviceID,
 			organisationID,
@@ -56,15 +61,16 @@ func (s *Store) CreateDeviceTask(ctx context.Context, task domain.DeviceTask, or
 	case DialectPostgres, DialectPostgreSQL:
 		var id int64
 		err := s.writeDB.QueryRowContext(ctx, `
-			INSERT INTO device_tasks (device_id, task_type, parameter, status, created_at)
-			SELECT d.id, $1, $2, $3, $4
+			INSERT INTO device_tasks (device_id, task_type, parameters_json, status, status_message, created_at)
+			SELECT d.id, $1, $2, $3, $4, $5
 			FROM devices d
-			WHERE d.id = $5 AND d.organisation_id = $6
+			WHERE d.id = $6 AND d.organisation_id = $7
 			RETURNING id
 		`,
 			task.Type,
-			nullableTaskParameter(task.Parameter),
+			task.ParametersJSON,
 			task.Status,
+			nullableStatusMessage(task.StatusMessage),
 			task.CreatedAt,
 			task.DeviceID,
 			organisationID,
@@ -84,7 +90,7 @@ func (s *Store) CreateDeviceTask(ctx context.Context, task domain.DeviceTask, or
 
 func (s *Store) ListOngoingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) ([]domain.DeviceTask, error) {
 	query := `
-		SELECT t.id, t.device_id, t.task_type, t.parameter, t.status, t.created_at, t.completed_at
+		SELECT t.id, t.device_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.completed_at
 		FROM device_tasks t
 		JOIN devices d ON d.id = t.device_id
 		WHERE t.device_id = ?
@@ -95,7 +101,7 @@ func (s *Store) ListOngoingDeviceTasks(ctx context.Context, deviceID string, org
 	args := []any{deviceID, organisationID}
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
-			SELECT t.id, t.device_id, t.task_type, t.parameter, t.status, t.created_at, t.completed_at
+			SELECT t.id, t.device_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.completed_at
 			FROM device_tasks t
 			JOIN devices d ON d.id = t.device_id
 			WHERE t.device_id = $1
@@ -128,7 +134,7 @@ func (s *Store) ListOngoingDeviceTasks(ctx context.Context, deviceID string, org
 
 func (s *Store) ListPendingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) ([]domain.DeviceTask, error) {
 	query := `
-		SELECT t.id, t.device_id, t.task_type, t.parameter, t.status, t.created_at, t.completed_at
+		SELECT t.id, t.device_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.completed_at
 		FROM device_tasks t
 		JOIN devices d ON d.id = t.device_id
 		WHERE t.device_id = ?
@@ -139,7 +145,7 @@ func (s *Store) ListPendingDeviceTasks(ctx context.Context, deviceID string, org
 	args := []any{deviceID, organisationID}
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
-			SELECT t.id, t.device_id, t.task_type, t.parameter, t.status, t.created_at, t.completed_at
+			SELECT t.id, t.device_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.completed_at
 			FROM device_tasks t
 			JOIN devices d ON d.id = t.device_id
 			WHERE t.device_id = $1
@@ -176,7 +182,7 @@ func (s *Store) ListActiveAndRecentDeviceTasks(ctx context.Context, deviceID str
 	}
 
 	query := `
-		SELECT t.id, t.device_id, t.task_type, t.parameter, t.status, t.created_at, t.completed_at
+		SELECT t.id, t.device_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.completed_at
 		FROM device_tasks t
 		JOIN devices d ON d.id = t.device_id
 		WHERE t.device_id = ?
@@ -200,7 +206,7 @@ func (s *Store) ListActiveAndRecentDeviceTasks(ctx context.Context, deviceID str
 	args := []any{deviceID, organisationID, deviceID, completedLimit}
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
-			SELECT t.id, t.device_id, t.task_type, t.parameter, t.status, t.created_at, t.completed_at
+			SELECT t.id, t.device_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.completed_at
 			FROM device_tasks t
 			JOIN devices d ON d.id = t.device_id
 			WHERE t.device_id = $1
@@ -244,10 +250,10 @@ func (s *Store) ListActiveAndRecentDeviceTasks(ctx context.Context, deviceID str
 	return tasks, nil
 }
 
-func (s *Store) UpdateDeviceTaskStatus(ctx context.Context, taskID int64, deviceID string, organisationID int64, status string, completedAt string) error {
+func (s *Store) UpdateDeviceTaskStatus(ctx context.Context, taskID int64, deviceID string, organisationID int64, status string, completedAt string, statusMessage string) error {
 	query := `
 		UPDATE device_tasks
-		SET status = ?, completed_at = ?
+		SET status = ?, completed_at = ?, status_message = ?
 		WHERE id = ?
 			AND device_id = ?
 			AND status NOT IN ('success', 'failure', 'canceled')
@@ -257,18 +263,18 @@ func (s *Store) UpdateDeviceTaskStatus(ctx context.Context, taskID int64, device
 				WHERE d.id = device_tasks.device_id AND d.organisation_id = ?
 			)
 	`
-	args := []any{status, nullableCompletedAt(completedAt), taskID, deviceID, organisationID}
+	args := []any{status, nullableCompletedAt(completedAt), nullableStatusMessage(statusMessage), taskID, deviceID, organisationID}
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
 			UPDATE device_tasks
-			SET status = $1, completed_at = $2
-			WHERE id = $3
-				AND device_id = $4
+			SET status = $1, completed_at = $2, status_message = $3
+			WHERE id = $4
+				AND device_id = $5
 				AND status NOT IN ('success', 'failure', 'canceled')
 				AND EXISTS (
 					SELECT 1
 					FROM devices d
-					WHERE d.id = device_tasks.device_id AND d.organisation_id = $5
+					WHERE d.id = device_tasks.device_id AND d.organisation_id = $6
 				)
 		`
 	}
@@ -290,23 +296,24 @@ func (s *Store) UpdateDeviceTaskStatus(ctx context.Context, taskID int64, device
 
 func scanDeviceTask(rows *sql.Rows) (domain.DeviceTask, error) {
 	var (
-		task        domain.DeviceTask
-		parameter   nullableString
-		completedAt nullableString
+		task          domain.DeviceTask
+		statusMessage nullableString
+		completedAt   nullableString
 	)
 	if err := rows.Scan(
 		&task.ID,
 		&task.DeviceID,
 		&task.Type,
-		&parameter,
+		&task.ParametersJSON,
 		&task.Status,
+		&statusMessage,
 		&task.CreatedAt,
 		&completedAt,
 	); err != nil {
 		return domain.DeviceTask{}, err
 	}
-	if parameter.Valid {
-		task.Parameter = parameter.String
+	if statusMessage.Valid {
+		task.StatusMessage = statusMessage.String
 	}
 	if completedAt.Valid {
 		task.CompletedAt = completedAt.String
@@ -314,11 +321,16 @@ func scanDeviceTask(rows *sql.Rows) (domain.DeviceTask, error) {
 	return task, nil
 }
 
-func nullableTaskParameter(parameter string) any {
-	if parameter == "" {
+func nullableStatusMessage(message string) any {
+	message = strings.TrimSpace(message)
+	if message == "" {
 		return nil
 	}
-	return parameter
+	runes := []rune(message)
+	if len(runes) > 512 {
+		return string(runes[:512])
+	}
+	return message
 }
 
 func nullableCompletedAt(completedAt string) any {
