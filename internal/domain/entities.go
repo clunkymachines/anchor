@@ -63,6 +63,25 @@ type OrganisationInvitation struct {
 	CreatedAt string
 }
 
+type OrganisationAPICredential struct {
+	// ID is the internal credential identifier.
+	ID int64
+	// OrganisationID identifies the organisation this token provisions for.
+	OrganisationID int64
+	// Name is the human-readable label shown to organisation admins.
+	Name string
+	// TokenHash stores a one-way hash of the bearer token.
+	TokenHash string
+	// Enabled controls whether the token may authenticate.
+	Enabled bool
+	// LastUsedAt is set after successful API authentication.
+	LastUsedAt string
+	// CreatedAt is when the credential was created.
+	CreatedAt string
+	// UpdatedAt is when the credential was last changed.
+	UpdatedAt string
+}
+
 type Device struct {
 	// ID is the stable device identifier.
 	ID string

@@ -37,11 +37,13 @@ const (
 	maxReleaseSBOMTotalSize  = 100 << 20
 	maxReleaseUpload         = maxFirmwareUpload + maxReleaseSBOMTotalSize
 	releaseSBOMFormFieldName = "spdx_files"
+	maxBulkUpsertDevices     = 2000
 )
 
 type contextKey string
 
 const userContextKey contextKey = "user"
+const apiCredentialContextKey contextKey = "api_credential"
 
 type Server struct {
 	store                  *db.Store
@@ -180,12 +182,16 @@ type organisationPageData struct {
 	Organisation        domain.Organisation
 	Admins              []domain.OrganisationMember
 	Members             []domain.OrganisationMember
+	APICredentials      []apiCredentialView
 	IsOrganisationAdmin bool
 	RenameFormError     string
 	InviteFormError     string
 	RemoveFormError     string
 	InviteURL           string
 	InviteMessage       string
+	APIToken            string
+	APIFormError        string
+	APIMessage          string
 }
 
 type invitationSignupPageData struct {
@@ -366,6 +372,16 @@ type deviceModelView struct {
 	CreatedAt                string
 }
 
+type apiCredentialView struct {
+	ID          int64
+	Name        string
+	Enabled     bool
+	Status      string
+	StatusClass string
+	LastUsedAt  string
+	CreatedAt   string
+}
+
 type mqttAuthRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -447,8 +463,12 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /organisations/rename", server.requireAuth(http.HandlerFunc(server.organisationRenamePost)))
 	mux.Handle("POST /organisations/invitations", server.requireAuth(http.HandlerFunc(server.organisationInvitationsPost)))
 	mux.Handle("POST /organisations/members/remove", server.requireAuth(http.HandlerFunc(server.organisationMemberRemovePost)))
+	mux.Handle("POST /organisations/api-credentials", server.requireAuth(http.HandlerFunc(server.organisationAPICredentialsPost)))
+	mux.Handle("POST /organisations/api-credentials/{credentialID}/disable", server.requireAuth(http.HandlerFunc(server.organisationAPICredentialDisablePost)))
+	mux.Handle("POST /organisations/api-credentials/{credentialID}/rotate", server.requireAuth(http.HandlerFunc(server.organisationAPICredentialRotatePost)))
 	mux.HandleFunc("GET /invitations/{token}", server.invitationSignup)
 	mux.HandleFunc("POST /invitations/{token}", server.invitationSignupPost)
+	mux.Handle("POST /api/v1/devices/bulk-upsert", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceBulkUpsert)))
 	mux.HandleFunc("POST /mqtt/auth", server.mqttAuth)
 	mux.HandleFunc("POST /mqtt/superuser", server.mqttSuperuser)
 	mux.HandleFunc("POST /mqtt/acl", server.mqttACL)
@@ -2171,6 +2191,103 @@ func (s *Server) organisationMemberRemovePost(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/organisations?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
 
+func (s *Server) organisationAPICredentialsPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, organisationID, ok := s.organisationAdminMutationTarget(w, r)
+	if !ok {
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		s.renderOrganisationForShellWithAPI(w, r, shell, organisationID, "", "", "", "", "", "", "Credential name is required.", "")
+		return
+	}
+	result, err := s.store.CreateOrganisationAPICredential(r.Context(), organisationID, name)
+	if err != nil {
+		s.renderOrganisationForShellWithAPI(w, r, shell, organisationID, "", "", "", "", "", "", "Could not create API credential.", "")
+		return
+	}
+	s.renderOrganisationForShellWithAPI(w, r, shell, organisationID, "", "", "", "", "", result.Token, "", "API credential created.")
+}
+
+func (s *Server) organisationAPICredentialDisablePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	_, organisationID, ok := s.organisationAdminMutationTarget(w, r)
+	if !ok {
+		return
+	}
+	credentialID, ok := credentialIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.DisableOrganisationAPICredential(r.Context(), organisationID, credentialID); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "api credential disable error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/organisations?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) organisationAPICredentialRotatePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, organisationID, ok := s.organisationAdminMutationTarget(w, r)
+	if !ok {
+		return
+	}
+	credentialID, ok := credentialIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	result, err := s.store.RotateOrganisationAPICredential(r.Context(), organisationID, credentialID)
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "api credential rotate error", http.StatusInternalServerError)
+		return
+	}
+	s.renderOrganisationForShellWithAPI(w, r, shell, organisationID, "", "", "", "", "", result.Token, "", "API credential rotated.")
+}
+
+func (s *Server) organisationAdminMutationTarget(w http.ResponseWriter, r *http.Request) (shellPageData, int64, bool) {
+	shell, organisationID, ok := s.organisationMutationTarget(w, r)
+	if !ok {
+		return shellPageData{}, 0, false
+	}
+	isAdmin, err := s.store.IsOrganisationAdmin(r.Context(), shell.User.ID, organisationID)
+	if err != nil {
+		http.Error(w, "organisation permission query error", http.StatusInternalServerError)
+		return shellPageData{}, 0, false
+	}
+	if !isAdmin {
+		http.Error(w, "organisation admin required", http.StatusForbidden)
+		return shellPageData{}, 0, false
+	}
+	return shell, organisationID, true
+}
+
+func credentialIDFromPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	credentialID, err := strconv.ParseInt(r.PathValue("credentialID"), 10, 64)
+	if err != nil || credentialID <= 0 {
+		http.NotFound(w, r)
+		return 0, false
+	}
+	return credentialID, true
+}
+
 func (s *Server) invitationSignup(w http.ResponseWriter, r *http.Request) {
 	invitation, err := s.store.InvitationByToken(r.Context(), r.PathValue("token"), time.Now())
 	if errors.Is(err, db.ErrInvalidInvitation) {
@@ -2271,7 +2388,11 @@ func (s *Server) organisationMutationTarget(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) renderOrganisationForShell(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, renameError string, inviteError string, removeError string, inviteURL string, inviteMessage string) {
-	data, ok := s.loadOrganisationPageDataForShell(w, r, shell, organisationID, renameError, inviteError, removeError, inviteURL, inviteMessage)
+	s.renderOrganisationForShellWithAPI(w, r, shell, organisationID, renameError, inviteError, removeError, inviteURL, inviteMessage, "", "", "")
+}
+
+func (s *Server) renderOrganisationForShellWithAPI(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, renameError string, inviteError string, removeError string, inviteURL string, inviteMessage string, apiToken string, apiError string, apiMessage string) {
+	data, ok := s.loadOrganisationPageDataForShell(w, r, shell, organisationID, renameError, inviteError, removeError, inviteURL, inviteMessage, apiToken, apiError, apiMessage)
 	if !ok {
 		return
 	}
@@ -2288,10 +2409,10 @@ func (s *Server) loadOrganisationPageData(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return organisationPageData{}, false
 	}
-	return s.loadOrganisationPageDataForShell(w, r, shell, organisationID, renameError, inviteError, removeError, inviteURL, inviteMessage)
+	return s.loadOrganisationPageDataForShell(w, r, shell, organisationID, renameError, inviteError, removeError, inviteURL, inviteMessage, "", "", "")
 }
 
-func (s *Server) loadOrganisationPageDataForShell(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, renameError string, inviteError string, removeError string, inviteURL string, inviteMessage string) (organisationPageData, bool) {
+func (s *Server) loadOrganisationPageDataForShell(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, renameError string, inviteError string, removeError string, inviteURL string, inviteMessage string, apiToken string, apiError string, apiMessage string) (organisationPageData, bool) {
 	organisation, err := s.store.Organisation(r.Context(), organisationID)
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
@@ -2318,6 +2439,18 @@ func (s *Server) loadOrganisationPageDataForShell(w http.ResponseWriter, r *http
 			admins = append(admins, member)
 		}
 	}
+	apiCredentials := []apiCredentialView{}
+	if isOrganisationAdmin {
+		credentials, err := s.store.ListOrganisationAPICredentials(r.Context(), organisationID)
+		if err != nil {
+			http.Error(w, "api credential query error", http.StatusInternalServerError)
+			return organisationPageData{}, false
+		}
+		apiCredentials = make([]apiCredentialView, 0, len(credentials))
+		for _, credential := range credentials {
+			apiCredentials = append(apiCredentials, apiCredentialViewFor(credential))
+		}
+	}
 
 	shell.SelectedOrganisationID = organisationID
 	return organisationPageData{
@@ -2325,12 +2458,16 @@ func (s *Server) loadOrganisationPageDataForShell(w http.ResponseWriter, r *http
 		Organisation:        organisation,
 		Admins:              admins,
 		Members:             members,
+		APICredentials:      apiCredentials,
 		IsOrganisationAdmin: isOrganisationAdmin,
 		RenameFormError:     renameError,
 		InviteFormError:     inviteError,
 		RemoveFormError:     removeError,
 		InviteURL:           inviteURL,
 		InviteMessage:       inviteMessage,
+		APIToken:            apiToken,
+		APIFormError:        apiError,
+		APIMessage:          apiMessage,
 	}, true
 }
 
@@ -3445,6 +3582,26 @@ func deviceConnectivity(device domain.Device, now time.Time) deviceConnectivityV
 		StatusClass: "status-danger",
 		LastSeen:    formatUnixMS(device.LastEventReceivedMS),
 	}
+}
+
+func apiCredentialViewFor(credential domain.OrganisationAPICredential) apiCredentialView {
+	view := apiCredentialView{
+		ID:          credential.ID,
+		Name:        credential.Name,
+		Enabled:     credential.Enabled,
+		Status:      "Disabled",
+		StatusClass: "status-neutral",
+		LastUsedAt:  "Never",
+		CreatedAt:   credential.CreatedAt,
+	}
+	if credential.Enabled {
+		view.Status = "Active"
+		view.StatusClass = "status-success"
+	}
+	if strings.TrimSpace(credential.LastUsedAt) != "" {
+		view.LastUsedAt = credential.LastUsedAt
+	}
+	return view
 }
 
 func formatUnixMS(timestampMS int64) string {

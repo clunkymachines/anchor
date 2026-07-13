@@ -64,6 +64,16 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"inviter_user_id",
 		"created_at",
 	})
+	assertColumns(t, store, "organisation_api_credentials", []string{
+		"id",
+		"organisation_id",
+		"name",
+		"token_hash",
+		"enabled",
+		"last_used_at",
+		"created_at",
+		"updated_at",
+	})
 	assertColumns(t, store, "devices", []string{
 		"id",
 		"organisation_id",

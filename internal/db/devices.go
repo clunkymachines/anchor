@@ -300,6 +300,21 @@ func (s *Store) DeviceExistsInOrganisation(ctx context.Context, deviceID string,
 	return err == nil, err
 }
 
+func (s *Store) DeviceOrganisationID(ctx context.Context, deviceID string) (int64, error) {
+	query := `SELECT organisation_id FROM devices WHERE id = ?`
+	args := []any{deviceID}
+	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
+		query = `SELECT organisation_id FROM devices WHERE id = $1`
+	}
+
+	var organisationID int64
+	err := s.readDB.QueryRowContext(ctx, query, args...).Scan(&organisationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return organisationID, err
+}
+
 func (s *Store) upsertDevice(ctx context.Context, tx txRunner, device domain.Device) error {
 	switch s.dialect {
 	case DialectSQLite:

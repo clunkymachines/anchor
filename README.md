@@ -57,6 +57,32 @@ When a decoded top-level `firmware` telemetry value is a string, Anchor trims su
 
 When the broker uses Anchor's `/mqtt/auth` and `/mqtt/acl` endpoints, the configured internal client may subscribe to `dev/+/+/data`, receive matching telemetry topics, and publish task messages to `dev/{orgID}/{deviceID}/task`. It is not allowed to publish device data or become a superuser.
 
+## Fleet simulator
+
+Organisation admins can create API credentials from the Organisations page. The token is shown once and can be used for provisioning through:
+
+```sh
+POST /api/v1/devices/bulk-upsert
+Authorization: Bearer anc_org_...
+Content-Type: application/json
+```
+
+The fleet simulator provisions devices with that API token, then connects one MQTT client per simulated device using deterministic per-device MQTT passwords. It publishes CBOR telemetry only and runs until interrupted.
+
+Example local run:
+
+```sh
+go run ./cmd/fleet-sim \
+  -anchor-url http://localhost:8080 \
+  -api-token "$ANCHOR_SIM_API_TOKEN" \
+  -mqtt-url mqtt://localhost:1883 \
+  -model-id 1 \
+  -fleet-size 10 \
+  -secret local-simulator-secret
+```
+
+Scale `-fleet-size` up to `1000` once Anchor and the broker are running with the HTTP auth callbacks above. If the fresh schema changed, delete and recreate the local database before the run.
+
 ## CVE scanning
 
 Firmware releases can include optional `.spdx` SBOM files. Anchor stores those files with the release artifacts and scans them asynchronously for CVEs when an SBOM is present or manually rescanned from the release detail page.

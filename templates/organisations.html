@@ -67,6 +67,87 @@
 							</form>
 						</section>
 
+						<section class="grid grid-cols-2 organisation-settings-grid">
+							<form class="device-create-form" method="post" action="/organisations/api-credentials">
+								<input type="hidden" name="organisation_id" value="{{.Organisation.ID}}">
+								<section class="card form-card">
+									<header class="card-header">
+										<div>
+											<h2 class="card-title">API access</h2>
+											<p class="card-subtitle">Organisation provisioning tokens</p>
+										</div>
+									</header>
+									<div class="card-body">
+										{{if .APIFormError}}
+											<p class="form-error">{{.APIFormError}}</p>
+										{{end}}
+										{{if .APIMessage}}
+											<p class="form-success">{{.APIMessage}}</p>
+										{{end}}
+										{{if .APIToken}}
+											<label class="field">
+												<span class="field-label">New token</span>
+												<input class="input value-mono" value="{{.APIToken}}" readonly>
+											</label>
+										{{end}}
+										<label class="field">
+											<span class="field-label">Name</span>
+											<input class="input" name="name" required>
+										</label>
+										<div class="form-actions">
+											<button class="button button-primary" type="submit">Create token</button>
+										</div>
+									</div>
+								</section>
+							</form>
+
+							<section class="card data-table-card">
+								<header class="card-header">
+									<div>
+										<h2 class="card-title">API credentials</h2>
+										<p class="card-subtitle">{{len .APICredentials}} credentials configured</p>
+									</div>
+								</header>
+								<div class="data-table-wrapper">
+									<table class="data-table">
+										<thead>
+											<tr>
+												<th scope="col">Name</th>
+												<th scope="col">Status</th>
+												<th scope="col">Last used</th>
+												<th scope="col" class="table-action-column">Actions</th>
+											</tr>
+										</thead>
+										<tbody>
+											{{range .APICredentials}}
+												<tr>
+													<td>{{.Name}}</td>
+													<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
+													<td>{{if eq .LastUsedAt "Never"}}Never{{else}}{{localTime .LastUsedAt}}{{end}}</td>
+													<td class="table-actions-cell">
+														<form method="post" action="/organisations/api-credentials/{{.ID}}/rotate">
+															<input type="hidden" name="organisation_id" value="{{$.Organisation.ID}}">
+															<button class="button button-secondary button-small" type="submit">Rotate</button>
+														</form>
+														{{if .Enabled}}
+															<form method="post" action="/organisations/api-credentials/{{.ID}}/disable">
+																<input type="hidden" name="organisation_id" value="{{$.Organisation.ID}}">
+																<button class="button button-danger button-small" type="submit">Disable</button>
+															</form>
+														{{end}}
+													</td>
+												</tr>
+											{{else}}
+												<tr>
+													<td class="empty-table-cell" colspan="4">No API credentials configured.</td>
+												</tr>
+											{{end}}
+										</tbody>
+									</table>
+								</div>
+							</section>
+						</section>
+
 						<section class="card data-table-card organisation-admins-card">
 							<header class="card-header">
 								<div>
