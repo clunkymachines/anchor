@@ -81,7 +81,7 @@ func (s *Store) RecordDeviceEvent(ctx context.Context, event domain.DeviceEvent,
 }
 
 func firmwareVersionFromTelemetryProperty(property domain.DeviceTwinProperty) (string, bool) {
-	if property.Path != "firmware" || property.ValueType != "string" {
+	if property.ValueType != "string" || (property.Path != "firmware" && property.Path != "firmware.version") {
 		return "", false
 	}
 	var version string

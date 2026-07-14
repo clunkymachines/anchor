@@ -134,6 +134,22 @@ func TestHandlePublishUpdatesFirmwareSoftwareVersionFromStringTelemetry(t *testi
 
 	client.handlePublish(ctx, &paho.Publish{
 		Topic:   "dev/" + int64String(organisationID) + "/device-001/data",
+		Payload: []byte(`{"firmware":{"version":" 1.2.4 "}}`),
+		Properties: &paho.PublishProperties{
+			ContentType: "application/json",
+		},
+	})
+
+	detail, err = store.DeviceDetail(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("device detail after nested firmware telemetry: %v", err)
+	}
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.4" {
+		t.Fatalf("expected nested firmware version, got %#v", detail.Device.SoftwareVersions)
+	}
+
+	client.handlePublish(ctx, &paho.Publish{
+		Topic:   "dev/" + int64String(organisationID) + "/device-001/data",
 		Payload: []byte(`{"firmware":123}`),
 		Properties: &paho.PublishProperties{
 			ContentType: "application/json",
@@ -144,7 +160,7 @@ func TestHandlePublishUpdatesFirmwareSoftwareVersionFromStringTelemetry(t *testi
 	if err != nil {
 		t.Fatalf("device detail after non-string firmware telemetry: %v", err)
 	}
-	if detail.Device.SoftwareVersions["firmware"] != "1.2.3" {
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.4" {
 		t.Fatalf("expected non-string firmware telemetry to be ignored for matching state, got %#v", detail.Device.SoftwareVersions)
 	}
 }

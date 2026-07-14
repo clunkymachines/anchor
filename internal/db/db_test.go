@@ -1349,6 +1349,34 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 		Operation:     "publish",
 		Topic:         "dev/1/device-001/data",
 		ContentFormat: "application/json",
+		PayloadJSON:   `{"firmware":{"version":" 1.2.4 "}}`,
+		Source:        "broker",
+	}, []domain.DeviceTwinProperty{
+		{
+			Path:         "firmware.version",
+			ValueJSON:    `" 1.2.4 "`,
+			ValueType:    "string",
+			TSObservedMS: 1235,
+		},
+	}); err != nil {
+		t.Fatalf("record nested firmware version event: %v", err)
+	}
+	detail, err = store.DeviceDetail(ctx, "device-001", organisationID)
+	if err != nil {
+		t.Fatalf("load device detail after nested firmware version: %v", err)
+	}
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.4" {
+		t.Fatalf("expected nested firmware version to update matching state, got %#v", detail.Device.SoftwareVersions)
+	}
+
+	if _, err := store.RecordDeviceEvent(ctx, domain.DeviceEvent{
+		DeviceID:      "device-001",
+		TSReceivedMS:  1236,
+		Protocol:      "mqtt",
+		Direction:     "inbound",
+		Operation:     "publish",
+		Topic:         "dev/1/device-001/data",
+		ContentFormat: "application/json",
 		PayloadJSON:   `{"firmware":123}`,
 		Source:        "broker",
 	}, []domain.DeviceTwinProperty{
@@ -1356,7 +1384,7 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 			Path:         "firmware",
 			ValueJSON:    "123",
 			ValueType:    "number",
-			TSObservedMS: 1235,
+			TSObservedMS: 1236,
 		},
 	}); err != nil {
 		t.Fatalf("record non-string firmware event: %v", err)
@@ -1365,7 +1393,7 @@ func TestRecordDeviceEventUpdatesTwin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load device detail after non-string firmware: %v", err)
 	}
-	if detail.Device.SoftwareVersions["firmware"] != "1.2.3" {
+	if detail.Device.SoftwareVersions["firmware"] != "1.2.4" {
 		t.Fatalf("expected non-string firmware telemetry not to update software versions, got %#v", detail.Device.SoftwareVersions)
 	}
 }
