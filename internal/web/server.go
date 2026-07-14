@@ -105,6 +105,34 @@ type devicesPageData struct {
 	DeviceInventorySuffix string
 }
 
+type campaignSelectionPageData struct {
+	Shell        shellPageData
+	Devices      []campaignDevicePreviewView
+	Releases     []releaseOptionView
+	FormError    string
+	Name         string
+	TaskType     string
+	ReadPaths    string
+	WriteValues  string
+	TTLDays      int
+	ReleaseID    int64
+	CanUseFOTA   bool
+	FOTAHelpText string
+}
+
+type campaignsPageData struct {
+	Shell     shellPageData
+	Campaigns []campaignView
+}
+
+type campaignDetailPageData struct {
+	Shell        shellPageData
+	Campaign     campaignView
+	Tasks        []campaignTaskView
+	StatusFilter string
+	Pagination   paginationView
+}
+
 type deviceCreatePageData struct {
 	Shell          shellPageData
 	DeviceModels   []deviceModelOptionView
@@ -172,11 +200,6 @@ type deviceModelDetailPageData struct {
 	ExpectedReleaseFormError string
 }
 
-type otaDeploymentsPageData struct {
-	Shell       shellPageData
-	Deployments []domain.OTADeployment
-}
-
 type organisationPageData struct {
 	Shell               shellPageData
 	Organisation        domain.Organisation
@@ -226,6 +249,9 @@ type paginationView struct {
 	PrevURL    string
 	NextURL    string
 	PageSizes  []int
+	FormAction string
+	Query      string
+	Status     string
 }
 
 type deviceDetailView struct {
@@ -283,8 +309,58 @@ type deviceTaskView struct {
 	Status        string
 	StatusClass   string
 	StatusMessage string
+	CampaignID    int64
+	CampaignURL   string
 	CreatedAt     string
+	ExpiresAt     string
 	CompletedAt   string
+}
+
+type campaignDevicePreviewView struct {
+	ID        string
+	ModelName string
+	ModelID   int64
+}
+
+type campaignView struct {
+	ID             int64
+	OrganisationID int64
+	Name           string
+	Type           string
+	Summary        string
+	Status         string
+	StatusClass    string
+	CreatedAt      string
+	FinishedAt     string
+	CanceledAt     string
+	TTLDays        int64
+	TargetCount    int
+	Queued         int
+	Pending        int
+	InProgress     int
+	Success        int
+	Failure        int
+	Expired        int
+	Canceled       int
+	DetailURL      string
+	CancelAction   string
+}
+
+type campaignTaskView struct {
+	ID            int64
+	DeviceID      string
+	DeviceURL     string
+	ModelName     string
+	Type          string
+	Summary       string
+	Status        string
+	StatusClass   string
+	StatusValue   string
+	StatusMessage string
+	CreatedAt     string
+	ExpiresAt     string
+	CompletedAt   string
+	CancelAction  string
 }
 
 type releaseView struct {
@@ -423,6 +499,9 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 			server.cveScanWorker = worker
 		}
 	}
+	if server.taskPublisher != nil {
+		go server.runTaskScheduler(context.Background(), time.Minute)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /logo.png", server.logo)
@@ -442,6 +521,12 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTaskPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.deviceTaskCancelPost)))
 	mux.Handle("POST /devices/delete", server.requireAuth(http.HandlerFunc(server.deviceDeletePost)))
+	mux.Handle("GET /campaigns", server.requireAuth(http.HandlerFunc(server.campaigns)))
+	mux.Handle("POST /campaigns/new", server.requireAuth(http.HandlerFunc(server.campaignNewPost)))
+	mux.Handle("POST /campaigns", server.requireAuth(http.HandlerFunc(server.campaignsPost)))
+	mux.Handle("GET /campaigns/{campaignID}", server.requireAuth(http.HandlerFunc(server.campaignDetail)))
+	mux.Handle("POST /campaigns/{campaignID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.campaignTaskCancelPost)))
+	mux.Handle("POST /campaigns/{campaignID}/cancel", server.requireAuth(http.HandlerFunc(server.campaignCancelPost)))
 	mux.Handle("GET /device-models", server.requireAuth(http.HandlerFunc(server.deviceModels)))
 	mux.Handle("GET /device-models/new", server.requireAuth(http.HandlerFunc(server.deviceModelNew)))
 	mux.Handle("GET /device-models/{modelID}", server.requireAuth(http.HandlerFunc(server.deviceModelDetail)))
@@ -458,7 +543,6 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /releases/{releaseID}/cves/{cveID}/waiver", server.requireAuth(http.HandlerFunc(server.releaseCVEMarkNotRelevantPost)))
 	mux.Handle("POST /releases/{releaseID}/cves/{cveID}/waiver/delete", server.requireAuth(http.HandlerFunc(server.releaseCVEUnmarkNotRelevantPost)))
 	mux.HandleFunc("GET /org/{organisationID}/releases/{releaseID}/binary", server.releaseBinary)
-	mux.Handle("GET /ota-updates", server.requireAuth(http.HandlerFunc(server.otaUpdates)))
 	mux.Handle("GET /organisations", server.requireAuth(http.HandlerFunc(server.organisations)))
 	mux.Handle("POST /organisations/rename", server.requireAuth(http.HandlerFunc(server.organisationRenamePost)))
 	mux.Handle("POST /organisations/invitations", server.requireAuth(http.HandlerFunc(server.organisationInvitationsPost)))
@@ -955,10 +1039,17 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 		DeviceID:       deviceID,
 		Type:           taskType,
 		ParametersJSON: parametersJSON,
-		Status:         db.DeviceTaskStatusPending,
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
-	taskID, err := s.store.CreateDeviceTask(r.Context(), task, organisationID)
+	_, ttlSeconds, err := domain.ParseTaskTTLDays(r.FormValue("ttl_days"))
+	if err != nil {
+		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, err.Error())
+		return
+	}
+	task, err = s.store.CreateQueuedDeviceTask(r.Context(), organisationID, db.CreateDeviceTaskOptions{
+		Task:        task,
+		TTLSeconds:  ttlSeconds,
+		CreatedTime: time.Now().UTC(),
+	})
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -967,8 +1058,10 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device task create error", http.StatusInternalServerError)
 		return
 	}
-	task.ID = taskID
-	s.publishDeviceTask(r.Context(), task, organisationID)
+	if task.Status == db.DeviceTaskStatusPending {
+		s.publishDeviceTask(r.Context(), task, organisationID)
+	}
+	s.processTaskQueue(r.Context())
 
 	http.Redirect(w, r, "/devices/"+deviceID+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
@@ -1034,7 +1127,7 @@ func (s *Server) deviceTaskCancelPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = s.store.UpdateDeviceTaskStatus(r.Context(), taskID, deviceID, organisationID, db.DeviceTaskStatusCanceled, time.Now().UTC().Format(time.RFC3339), "")
+	outcome, err := s.store.CancelDeviceTask(r.Context(), taskID, deviceID, organisationID, time.Now().UTC(), "")
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -1043,6 +1136,11 @@ func (s *Server) deviceTaskCancelPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device task cancel error", http.StatusInternalServerError)
 		return
 	}
+	if outcome == db.TaskTransitionNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	s.processTaskQueue(r.Context())
 
 	if r.Header.Get("HX-Request") == "true" {
 		s.renderDeviceTasksForDevice(w, r, deviceID, organisationID)
@@ -2039,7 +2137,7 @@ func cleanUploadFilename(filename string) string {
 	return cleaned
 }
 
-func (s *Server) otaUpdates(w http.ResponseWriter, r *http.Request) {
+func (s *Server) campaigns(w http.ResponseWriter, r *http.Request) {
 	shell, ok := s.shellData(w, r)
 	if !ok {
 		return
@@ -2050,16 +2148,244 @@ func (s *Server) otaUpdates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deployments, err := s.store.ListOngoingOTADeployments(r.Context(), organisationID)
+	campaigns, err := s.store.ListCampaigns(r.Context(), organisationID)
 	if err != nil {
-		http.Error(w, "ota deployment query error", http.StatusInternalServerError)
+		http.Error(w, "campaign query error", http.StatusInternalServerError)
 		return
 	}
 
-	s.renderOTAUpdates(w, otaDeploymentsPageData{
-		Shell:       shell,
-		Deployments: deployments,
+	views := make([]campaignView, 0, len(campaigns))
+	for _, campaign := range campaigns {
+		views = append(views, s.campaignView(campaign))
+	}
+	s.renderCampaigns(w, campaignsPageData{
+		Shell:     shell,
+		Campaigns: views,
 	})
+}
+
+func (s *Server) campaignNewPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, r.Form["device_id"], "")
+	if err != nil {
+		s.renderCampaignNew(w, campaignSelectionPageData{Shell: shell, FormError: err.Error(), TTLDays: domain.DefaultTaskTTLDays})
+		return
+	}
+	s.renderCampaignNew(w, data)
+}
+
+func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	deviceIDs := r.Form["device_id"]
+	taskType := r.FormValue("task_type")
+	parametersJSON, err := s.taskParametersFromForm(r, taskType, organisationID)
+	if err == nil && taskType == domain.TaskTypeFOTA {
+		err = s.validateCampaignFOTASelection(r.Context(), organisationID, deviceIDs, r.FormValue("release_id"))
+	}
+	_, ttlSeconds, ttlErr := domain.ParseTaskTTLDays(r.FormValue("ttl_days"))
+	if ttlErr != nil && err == nil {
+		err = ttlErr
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" && err == nil {
+		err = errors.New("campaign name is required")
+	}
+	if parametersJSON == "" && err == nil {
+		err = errors.New("choose a supported task type")
+	}
+	if err != nil {
+		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, err.Error())
+		if loadErr != nil {
+			http.Error(w, loadErr.Error(), http.StatusBadRequest)
+			return
+		}
+		data.Name = name
+		data.TaskType = taskType
+		data.ReadPaths = r.FormValue("read_paths")
+		data.WriteValues = r.FormValue("write_values")
+		data.ReleaseID, _ = strconv.ParseInt(r.FormValue("release_id"), 10, 64)
+		data.TTLDays = parsePositiveInt(r.FormValue("ttl_days"), domain.DefaultTaskTTLDays)
+		s.renderCampaignNew(w, data)
+		return
+	}
+	result, err := s.store.CreateCampaign(r.Context(), db.CampaignCreate{
+		OrganisationID: organisationID,
+		Name:           name,
+		TaskType:       taskType,
+		ParametersJSON: parametersJSON,
+		TTLSeconds:     ttlSeconds,
+		DeviceIDs:      deviceIDs,
+		CreatedAt:      time.Now().UTC(),
+	})
+	if err != nil {
+		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, err.Error())
+		if loadErr != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		data.Name = name
+		data.TaskType = taskType
+		s.renderCampaignNew(w, data)
+		return
+	}
+	for _, task := range result.PendingTasks {
+		s.publishDeviceTask(r.Context(), task, organisationID)
+	}
+	s.processTaskQueue(r.Context())
+	http.Redirect(w, r, campaignDetailURL(result.Campaign.ID, organisationID), http.StatusSeeOther)
+}
+
+func (s *Server) campaignDetail(w http.ResponseWriter, r *http.Request) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	campaignID, err := strconv.ParseInt(r.PathValue("campaignID"), 10, 64)
+	if err != nil || campaignID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	campaign, err := s.store.Campaign(r.Context(), organisationID, campaignID)
+	if errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "campaign query error", http.StatusInternalServerError)
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
+	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), db.DefaultDevicePageSize)
+	taskPage, err := s.store.ListCampaignTasks(r.Context(), db.CampaignTaskQuery{OrganisationID: organisationID, CampaignID: campaignID, Status: status, Page: page, PageSize: pageSize})
+	if err != nil {
+		http.Error(w, "campaign task query error", http.StatusInternalServerError)
+		return
+	}
+	tasks := make([]campaignTaskView, 0, len(taskPage.Rows))
+	for _, row := range taskPage.Rows {
+		tasks = append(tasks, s.campaignTaskView(row, organisationID, campaignID, r.URL.RawQuery))
+	}
+	s.renderCampaignDetail(w, campaignDetailPageData{
+		Shell:        shell,
+		Campaign:     s.campaignView(campaign),
+		Tasks:        tasks,
+		StatusFilter: status,
+		Pagination:   campaignPaginationView(r.URL.Path, organisationID, campaignID, status, taskPage.Pagination),
+	})
+}
+
+func (s *Server) campaignTaskCancelPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	campaignID, err := strconv.ParseInt(r.PathValue("campaignID"), 10, 64)
+	if err != nil || campaignID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("taskID"), 10, 64)
+	if err != nil || taskID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	taskPage, err := s.store.ListCampaignTasks(r.Context(), db.CampaignTaskQuery{OrganisationID: organisationID, CampaignID: campaignID, Page: 1, PageSize: 100})
+	if err != nil {
+		http.Error(w, "campaign task query error", http.StatusInternalServerError)
+		return
+	}
+	var deviceID string
+	for _, row := range taskPage.Rows {
+		if row.Task.ID == taskID {
+			deviceID = row.Task.DeviceID
+			break
+		}
+	}
+	if deviceID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	outcome, err := s.store.CancelDeviceTask(r.Context(), taskID, deviceID, organisationID, time.Now().UTC(), "")
+	if err != nil {
+		http.Error(w, "campaign task cancel error", http.StatusInternalServerError)
+		return
+	}
+	if outcome == db.TaskTransitionNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	_, _ = s.store.FinalizeFinishedCampaigns(r.Context(), time.Now().UTC())
+	s.processTaskQueue(r.Context())
+	http.Redirect(w, r, campaignDetailURL(campaignID, organisationID), http.StatusSeeOther)
+}
+
+func (s *Server) campaignCancelPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	campaignID, err := strconv.ParseInt(r.PathValue("campaignID"), 10, 64)
+	if err != nil || campaignID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.CancelCampaign(r.Context(), organisationID, campaignID, time.Now().UTC()); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "campaign cancel error", http.StatusInternalServerError)
+		return
+	}
+	s.processTaskQueue(r.Context())
+	http.Redirect(w, r, campaignDetailURL(campaignID, organisationID), http.StatusSeeOther)
 }
 
 func (s *Server) organisations(w http.ResponseWriter, r *http.Request) {
@@ -2617,6 +2943,27 @@ func (s *Server) renderDeviceTaskNew(w http.ResponseWriter, data deviceTaskLaunc
 	}
 }
 
+func (s *Server) renderCampaignNew(w http.ResponseWriter, data campaignSelectionPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "campaign_new.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderCampaigns(w http.ResponseWriter, data campaignsPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "campaigns.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderCampaignDetail(w http.ResponseWriter, data campaignDetailPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "campaign_detail.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
 func (s *Server) renderReleases(w http.ResponseWriter, data releasesPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "releases.html", data); err != nil {
@@ -2662,13 +3009,6 @@ func (s *Server) renderDeviceModelNew(w http.ResponseWriter, data deviceModelCre
 func (s *Server) renderDeviceModelDetail(w http.ResponseWriter, data deviceModelDetailPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "device_model_detail.html", data); err != nil {
-		http.Error(w, "template error", http.StatusInternalServerError)
-	}
-}
-
-func (s *Server) renderOTAUpdates(w http.ResponseWriter, data otaDeploymentsPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "ota_updates.html", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
@@ -3048,6 +3388,78 @@ func (s *Server) loadDeviceTaskLaunchPageData(ctx context.Context, shell shellPa
 	}, nil
 }
 
+func (s *Server) loadCampaignSelectionPageData(ctx context.Context, shell shellPageData, organisationID int64, deviceIDs []string, formError string) (campaignSelectionPageData, error) {
+	devices, err := s.store.CampaignTargetDevices(ctx, organisationID, deviceIDs)
+	if err != nil {
+		return campaignSelectionPageData{}, err
+	}
+	views := make([]campaignDevicePreviewView, 0, len(devices))
+	modelID := int64(0)
+	sameModel := true
+	for i, device := range devices {
+		if i == 0 {
+			modelID = device.DeviceModelID
+		} else if device.DeviceModelID != modelID {
+			sameModel = false
+		}
+		views = append(views, campaignDevicePreviewView{ID: device.ID, ModelName: device.ModelName, ModelID: device.DeviceModelID})
+	}
+	releases, err := s.loadReleaseOptions(ctx, organisationID)
+	if err != nil {
+		return campaignSelectionPageData{}, err
+	}
+	filteredReleases := make([]releaseOptionView, 0, len(releases))
+	if sameModel {
+		for _, release := range releases {
+			releaseRecord, err := s.store.SoftwareRelease(ctx, release.ID, organisationID)
+			if err != nil {
+				return campaignSelectionPageData{}, err
+			}
+			if releaseRecord.DeviceModelID == modelID {
+				filteredReleases = append(filteredReleases, release)
+			}
+		}
+	}
+	help := ""
+	if !sameModel {
+		help = "FOTA campaigns require all selected devices to use the same model."
+	} else if len(filteredReleases) == 0 {
+		help = "No compatible releases are available for the selected model."
+	}
+	return campaignSelectionPageData{
+		Shell:        shell,
+		Devices:      views,
+		Releases:     filteredReleases,
+		FormError:    formError,
+		TaskType:     domain.TaskTypeRead,
+		WriteValues:  "[{\"path\":\"config.sample_interval\",\"value\":60}]",
+		TTLDays:      domain.DefaultTaskTTLDays,
+		CanUseFOTA:   len(filteredReleases) > 0,
+		FOTAHelpText: help,
+	}, nil
+}
+
+func (s *Server) validateCampaignFOTASelection(ctx context.Context, organisationID int64, deviceIDs []string, releaseIDValue string) error {
+	releaseID, err := strconv.ParseInt(releaseIDValue, 10, 64)
+	if err != nil || releaseID <= 0 {
+		return errors.New("choose a release for the FOTA task")
+	}
+	release, err := s.store.SoftwareRelease(ctx, releaseID, organisationID)
+	if err != nil {
+		return errors.New("choose a release from this organisation")
+	}
+	devices, err := s.store.CampaignTargetDevices(ctx, organisationID, deviceIDs)
+	if err != nil {
+		return err
+	}
+	for _, device := range devices {
+		if device.DeviceModelID != release.DeviceModelID {
+			return errors.New("all selected devices must match the FOTA release model")
+		}
+	}
+	return nil
+}
+
 func (s *Server) loadDeviceTelemetry(ctx context.Context, deviceID string, organisationID int64) ([]twinPropertyView, []deviceEventView, error) {
 	properties, err := s.store.ListDeviceTwinProperties(ctx, deviceID, organisationID)
 	if err != nil {
@@ -3105,12 +3517,29 @@ func (s *Server) loadActiveAndRecentDeviceTasks(ctx context.Context, deviceID st
 			Status:        formatDeviceTaskStatus(task.Status),
 			StatusClass:   deviceTaskStatusClass(task.Status),
 			StatusMessage: task.StatusMessage,
+			CampaignID:    dereferenceInt64(task.CampaignID),
+			CampaignURL:   campaignURLForTask(task, organisationID),
 			CreatedAt:     task.CreatedAt,
+			ExpiresAt:     task.ExpiresAt,
 			CompletedAt:   task.CompletedAt,
 		})
 	}
 
 	return views, nil
+}
+
+func dereferenceInt64(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func campaignURLForTask(task domain.DeviceTask, organisationID int64) string {
+	if task.CampaignID == nil {
+		return ""
+	}
+	return campaignDetailURL(*task.CampaignID, organisationID)
 }
 
 func (s *Server) loadReleaseOptions(ctx context.Context, organisationID int64) ([]releaseOptionView, error) {
@@ -3477,6 +3906,8 @@ func devicePaginationView(path string, organisationID int64, query string, pagin
 		HasPrev:    pagination.Page > 1,
 		HasNext:    pagination.Page < pagination.TotalPages,
 		PageSizes:  []int{25, 50, 100},
+		FormAction: path,
+		Query:      query,
 	}
 	if pagination.TotalRows > 0 {
 		view.RangeStart = pagination.Offset + 1
@@ -3506,6 +3937,50 @@ func devicePageURL(path string, organisationID int64, query string, page int, pa
 	return path + "?" + values.Encode()
 }
 
+func campaignPaginationView(path string, organisationID int64, campaignID int64, status string, pagination db.Pagination) paginationView {
+	view := paginationView{
+		Page:       pagination.Page,
+		PageSize:   pagination.PageSize,
+		TotalRows:  pagination.TotalRows,
+		TotalPages: pagination.TotalPages,
+		HasPrev:    pagination.Page > 1,
+		HasNext:    pagination.Page < pagination.TotalPages,
+		PageSizes:  []int{25, 50, 100},
+		FormAction: path,
+		Status:     status,
+	}
+	if pagination.TotalRows > 0 {
+		view.RangeStart = pagination.Offset + 1
+		view.RangeEnd = pagination.Offset + pagination.PageSize
+		if view.RangeEnd > pagination.TotalRows {
+			view.RangeEnd = pagination.TotalRows
+		}
+	}
+	if view.HasPrev {
+		view.PrevURL = campaignPageURL(path, organisationID, status, pagination.Page-1, pagination.PageSize)
+	}
+	if view.HasNext {
+		view.NextURL = campaignPageURL(path, organisationID, status, pagination.Page+1, pagination.PageSize)
+	}
+	_ = campaignID
+	return view
+}
+
+func campaignPageURL(path string, organisationID int64, status string, page int, pageSize int) string {
+	values := url.Values{}
+	values.Set("organisation_id", strconv.FormatInt(organisationID, 10))
+	if strings.TrimSpace(status) != "" {
+		values.Set("status", strings.TrimSpace(status))
+	}
+	values.Set("page", strconv.Itoa(page))
+	values.Set("page_size", strconv.Itoa(pageSize))
+	return path + "?" + values.Encode()
+}
+
+func campaignDetailURL(campaignID int64, organisationID int64) string {
+	return "/campaigns/" + strconv.FormatInt(campaignID, 10) + "?organisation_id=" + strconv.FormatInt(organisationID, 10)
+}
+
 func deviceModelDetailURL(modelID int64, organisationID int64) string {
 	return "/device-models/" + strconv.FormatInt(modelID, 10) + "?organisation_id=" + strconv.FormatInt(organisationID, 10)
 }
@@ -3529,6 +4004,10 @@ func formatDeviceTaskStatus(status string) string {
 		return "Success"
 	case db.DeviceTaskStatusFailure:
 		return "Failure"
+	case db.DeviceTaskStatusQueued:
+		return "Queued"
+	case db.DeviceTaskStatusExpired:
+		return "Expired"
 	case db.DeviceTaskStatusCanceled:
 		return "Canceled"
 	default:
@@ -3538,13 +4017,86 @@ func formatDeviceTaskStatus(status string) string {
 
 func deviceTaskStatusClass(status string) string {
 	switch status {
+	case db.DeviceTaskStatusQueued:
+		return "status-neutral"
 	case db.DeviceTaskStatusPending:
 		return "status-warning"
 	case db.DeviceTaskStatusInProgress:
 		return "status-info"
 	case db.DeviceTaskStatusSuccess:
 		return "status-success"
-	case db.DeviceTaskStatusFailure, db.DeviceTaskStatusCanceled:
+	case db.DeviceTaskStatusFailure, db.DeviceTaskStatusExpired, db.DeviceTaskStatusCanceled:
+		return "status-danger"
+	default:
+		return "status-neutral"
+	}
+}
+
+func (s *Server) campaignView(campaign domain.Campaign) campaignView {
+	return campaignView{
+		ID:             campaign.ID,
+		OrganisationID: campaign.OrganisationID,
+		Name:           campaign.Name,
+		Type:           campaign.TaskType,
+		Summary:        deviceTaskSummary(domain.DeviceTask{Type: campaign.TaskType, ParametersJSON: campaign.ParametersJSON}),
+		Status:         formatCampaignStatus(campaign.Status),
+		StatusClass:    campaignStatusClass(campaign.Status),
+		CreatedAt:      campaign.CreatedAt,
+		FinishedAt:     campaign.FinishedAt,
+		CanceledAt:     campaign.CanceledAt,
+		TTLDays:        campaign.TaskTTLSeconds / domain.SecondsPerDay,
+		TargetCount:    campaign.TargetCount,
+		Queued:         campaign.Counts.Queued,
+		Pending:        campaign.Counts.Pending,
+		InProgress:     campaign.Counts.InProgress,
+		Success:        campaign.Counts.Success,
+		Failure:        campaign.Counts.Failure,
+		Expired:        campaign.Counts.Expired,
+		Canceled:       campaign.Counts.Canceled,
+		DetailURL:      campaignDetailURL(campaign.ID, campaign.OrganisationID),
+		CancelAction:   "/campaigns/" + strconv.FormatInt(campaign.ID, 10) + "/cancel",
+	}
+}
+
+func (s *Server) campaignTaskView(row domain.CampaignTaskRow, organisationID int64, campaignID int64, rawQuery string) campaignTaskView {
+	return campaignTaskView{
+		ID:            row.Task.ID,
+		DeviceID:      row.Task.DeviceID,
+		DeviceURL:     "/devices/" + row.Task.DeviceID + "?organisation_id=" + strconv.FormatInt(organisationID, 10),
+		ModelName:     row.DeviceModelName,
+		Type:          row.Task.Type,
+		Summary:       deviceTaskSummary(row.Task),
+		Status:        formatDeviceTaskStatus(row.Task.Status),
+		StatusClass:   deviceTaskStatusClass(row.Task.Status),
+		StatusValue:   row.Task.Status,
+		StatusMessage: row.Task.StatusMessage,
+		CreatedAt:     row.Task.CreatedAt,
+		ExpiresAt:     row.Task.ExpiresAt,
+		CompletedAt:   row.Task.CompletedAt,
+		CancelAction:  "/campaigns/" + strconv.FormatInt(campaignID, 10) + "/tasks/" + strconv.FormatInt(row.Task.ID, 10) + "/cancel",
+	}
+}
+
+func formatCampaignStatus(status string) string {
+	switch status {
+	case db.CampaignStatusRunning:
+		return "Running"
+	case db.CampaignStatusFinished:
+		return "Finished"
+	case db.CampaignStatusCanceled:
+		return "Canceled"
+	default:
+		return status
+	}
+}
+
+func campaignStatusClass(status string) string {
+	switch status {
+	case db.CampaignStatusRunning:
+		return "status-info"
+	case db.CampaignStatusFinished:
+		return "status-success"
+	case db.CampaignStatusCanceled:
 		return "status-danger"
 	default:
 		return "status-neutral"

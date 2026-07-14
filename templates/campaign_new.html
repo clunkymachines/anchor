@@ -1,0 +1,77 @@
+{{template "app_page_start" (dict "Title" "Create campaign - Anchor" "Shell" .Shell "Active" "campaigns" "OrganisationAction" "/campaigns" "SearchPlaceholder" "Search campaigns" "DeviceBadge" "" "ReleaseBadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Create campaign</h1>
+							<p class="page-subtitle">{{len .Devices}} selected devices</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Change selection</a>
+						</div>
+					</header>
+
+					{{if .FormError}}<p class="form-error">{{.FormError}}</p>{{end}}
+
+					<section class="card form-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Targets</h2>
+								<p class="card-subtitle">Selection is fixed for this launch.</p>
+							</div>
+						</header>
+						<div class="card-body">
+							{{range .Devices}}
+								<span class="protocol-pill">{{.ID}} · {{.ModelName}}</span>
+							{{end}}
+						</div>
+					</section>
+
+					<section class="card form-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Task</h2>
+								<p class="card-subtitle">Creates one queued task per selected device.</p>
+							</div>
+						</header>
+						<form class="card-body device-task-form" method="post" action="/campaigns">
+							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+							{{range .Devices}}<input type="hidden" name="device_id" value="{{.ID}}">{{end}}
+							<label class="field">
+								<span class="field-label">Name</span>
+								<input class="input" name="name" value="{{.Name}}" required>
+							</label>
+							<label class="field">
+								<span class="field-label">TTL days</span>
+								<input class="input" type="number" name="ttl_days" min="1" step="1" value="{{.TTLDays}}" required>
+							</label>
+							<div class="tabs" aria-label="Task type">
+								<label class="tab-item"><input type="radio" name="task_type" value="read" checked> Read</label>
+								<label class="tab-item"><input type="radio" name="task_type" value="write"> Write</label>
+								<label class="tab-item {{if not .CanUseFOTA}}is-disabled{{end}}"><input type="radio" name="task_type" value="fota" {{if not .CanUseFOTA}}disabled{{end}}> FOTA</label>
+							</div>
+							<label class="field">
+								<span class="field-label">Read paths</span>
+								<textarea class="textarea task-textarea" name="read_paths" placeholder="battery.percent&#10;firmware.version">{{.ReadPaths}}</textarea>
+							</label>
+							<label class="field">
+								<span class="field-label">Write values</span>
+								<textarea class="textarea task-textarea task-json-textarea" name="write_values">{{.WriteValues}}</textarea>
+							</label>
+							<label class="field">
+								<span class="field-label">FOTA release</span>
+								<select class="select" name="release_id" {{if not .CanUseFOTA}}disabled{{end}}>
+									{{range .Releases}}
+										<option value="{{.ID}}" {{if eq .ID $.ReleaseID}}selected{{end}}>{{.Label}}</option>
+									{{else}}
+										<option>No compatible releases</option>
+									{{end}}
+								</select>
+								{{if .FOTAHelpText}}<span class="field-help">{{.FOTAHelpText}}</span>{{end}}
+							</label>
+							<div class="form-actions">
+								<button class="button button-primary" type="submit">Start campaign</button>
+							</div>
+						</form>
+					</section>
+				</main>
+{{template "app_page_end" .}}

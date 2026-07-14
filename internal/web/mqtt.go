@@ -168,6 +168,35 @@ func (s *Server) publishDeviceTask(ctx context.Context, task domain.DeviceTask, 
 	_ = s.taskPublisher.PublishDeviceTask(ctx, task, organisationID)
 }
 
+func (s *Server) processTaskQueue(ctx context.Context) {
+	now := time.Now().UTC()
+	_, _ = s.store.ExpireOverdueDeviceTasks(ctx, now)
+	promoted, err := s.store.PromoteQueuedDeviceTasks(ctx, now)
+	if err == nil {
+		for _, task := range promoted {
+			s.publishDeviceTask(ctx, task.Task, task.OrganisationID)
+		}
+	}
+	_, _ = s.store.FinalizeFinishedCampaigns(ctx, now)
+}
+
+func (s *Server) runTaskScheduler(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	s.processTaskQueue(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.processTaskQueue(ctx)
+		}
+	}
+}
+
 func (s *Server) publishPendingTasksAfterSubscribe(topic string, actions []string) {
 	if s.taskPublisher == nil || !mqttActionsInclude(actions, "subscribe") {
 		return

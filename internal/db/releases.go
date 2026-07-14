@@ -176,59 +176,6 @@ func (s *Store) DeleteSoftwareRelease(ctx context.Context, releaseID int64, orga
 	return nil
 }
 
-func (s *Store) ListOngoingOTADeployments(ctx context.Context, organisationID int64) ([]domain.OTADeployment, error) {
-	query := `
-		SELECT d.id, d.organisation_id, d.release_id, m.name, r.version, d.target, d.status, d.created_at
-		FROM ota_deployments d
-		JOIN software_releases r ON r.id = d.release_id AND r.organisation_id = d.organisation_id
-		JOIN device_models m ON m.id = r.device_model_id AND m.organisation_id = r.organisation_id
-		WHERE d.organisation_id = ?
-			AND d.status NOT IN ('completed', 'failed', 'cancelled')
-		ORDER BY d.created_at DESC, d.id DESC
-	`
-	args := []any{organisationID}
-	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
-		query = `
-			SELECT d.id, d.organisation_id, d.release_id, m.name, r.version, d.target, d.status, d.created_at
-			FROM ota_deployments d
-			JOIN software_releases r ON r.id = d.release_id AND r.organisation_id = d.organisation_id
-			JOIN device_models m ON m.id = r.device_model_id AND m.organisation_id = r.organisation_id
-			WHERE d.organisation_id = $1
-				AND d.status NOT IN ('completed', 'failed', 'cancelled')
-			ORDER BY d.created_at DESC, d.id DESC
-		`
-	}
-
-	rows, err := s.readDB.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var deployments []domain.OTADeployment
-	for rows.Next() {
-		var deployment domain.OTADeployment
-		if err := rows.Scan(
-			&deployment.ID,
-			&deployment.OrganisationID,
-			&deployment.ReleaseID,
-			&deployment.ReleaseModelName,
-			&deployment.ReleaseVersion,
-			&deployment.Target,
-			&deployment.Status,
-			&deployment.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		deployments = append(deployments, deployment)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return deployments, nil
-}
-
 type softwareReleaseScanner interface {
 	Scan(dest ...any) error
 }

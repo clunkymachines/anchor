@@ -117,12 +117,12 @@ func TestDeviceHandlersRejectOrganisationsOutsideUserMembership(t *testing.T) {
 		t.Fatalf("expected forbidden releases page to be hidden, got %d", releasesRes.Code)
 	}
 
-	otaReq := httptest.NewRequest(http.MethodGet, "/ota-updates?organisation_id="+strconv.FormatInt(forbiddenOrgID, 10), nil)
-	otaReq = otaReq.WithContext(context.WithValue(otaReq.Context(), userContextKey, user))
-	otaRes := httptest.NewRecorder()
-	server.otaUpdates(otaRes, otaReq)
-	if otaRes.Code != http.StatusNotFound {
-		t.Fatalf("expected forbidden ota page to be hidden, got %d", otaRes.Code)
+	campaignReq := httptest.NewRequest(http.MethodGet, "/campaigns?organisation_id="+strconv.FormatInt(forbiddenOrgID, 10), nil)
+	campaignReq = campaignReq.WithContext(context.WithValue(campaignReq.Context(), userContextKey, user))
+	campaignRes := httptest.NewRecorder()
+	server.campaigns(campaignRes, campaignReq)
+	if campaignRes.Code != http.StatusNotFound {
+		t.Fatalf("expected forbidden campaigns page to be hidden, got %d", campaignRes.Code)
 	}
 }
 
@@ -194,6 +194,7 @@ func TestDeviceTaskPostCreatesFOTATaskWithReleaseID(t *testing.T) {
 		"organisation_id": {strconv.FormatInt(organisationID, 10)},
 		"task_type":       {"fota"},
 		"release_id":      {strconv.FormatInt(releaseID, 10)},
+		"ttl_days":        {"7"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/devices/device-001/tasks", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

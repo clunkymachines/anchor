@@ -1,0 +1,54 @@
+{{template "app_page_start" (dict "Title" "Campaigns - Anchor" "Shell" .Shell "Active" "campaigns" "OrganisationAction" "/campaigns" "SearchPlaceholder" "Search campaigns" "DeviceBadge" "" "ReleaseBadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Campaigns</h1>
+							<p class="page-subtitle">Bulk task launch history and progress.</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-primary" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Select devices</a>
+						</div>
+					</header>
+
+					<section class="card data-table-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Campaign history</h2>
+								<p class="card-subtitle">{{len .Campaigns}} campaigns</p>
+							</div>
+						</header>
+						<div class="data-table-wrapper">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th scope="col">Name</th>
+										<th scope="col">Type</th>
+										<th scope="col">Task</th>
+										<th scope="col">Status</th>
+										<th scope="col">Targets</th>
+										<th scope="col">Results</th>
+										<th scope="col">Created</th>
+									</tr>
+								</thead>
+								<tbody>
+									{{range .Campaigns}}
+										<tr>
+											<td><a class="table-link" href="{{.DetailURL}}">{{.Name}}</a></td>
+											<td>{{.Type}}</td>
+											<td class="value-mono table-cell-wrap">{{.Summary}}</td>
+											<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
+											<td class="value-mono">{{.TargetCount}}</td>
+											<td class="value-mono">Q {{.Queued}} / P {{.Pending}} / OK {{.Success}} / Fail {{.Failure}} / Exp {{.Expired}} / Can {{.Canceled}}</td>
+											<td class="value-mono">{{localTime .CreatedAt}}</td>
+										</tr>
+									{{else}}
+										<tr>
+											<td class="empty-table-cell" colspan="7">No campaigns yet.</td>
+										</tr>
+									{{end}}
+								</tbody>
+							</table>
+						</div>
+					</section>
+				</main>
+{{template "app_page_end" .}}

@@ -867,6 +867,50 @@ a {
   margin-bottom: 0;
 }
 
+.campaign-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.15fr);
+  gap: 16px;
+  margin-bottom: 16px;
+  align-items: stretch;
+}
+
+.campaign-detail-grid > .form-card {
+  margin-bottom: 0;
+}
+
+.campaign-count-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.campaign-count {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-panel-muted);
+}
+
+.campaign-count span,
+.campaign-count strong {
+  display: block;
+}
+
+.campaign-count span {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.campaign-count strong {
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  line-height: 1;
+}
+
 .device-task-form {
   display: grid;
   gap: 14px;
@@ -1003,6 +1047,57 @@ a {
 
 .data-table tbody tr:hover {
   background: var(--surface-panel-muted);
+}
+
+.campaign-tasks-table {
+  table-layout: fixed;
+  min-width: 1120px;
+}
+
+.campaign-tasks-table .campaign-task-id {
+  width: 58px;
+}
+
+.campaign-tasks-table .campaign-task-device {
+  width: 142px;
+}
+
+.campaign-tasks-table .campaign-task-model {
+  width: 112px;
+}
+
+.campaign-tasks-table .campaign-task-status {
+  width: 150px;
+}
+
+.campaign-tasks-table .campaign-task-date {
+  width: 190px;
+}
+
+.campaign-tasks-table .campaign-task-actions {
+  width: 140px;
+}
+
+.campaign-tasks-table th,
+.campaign-tasks-table td {
+  vertical-align: top;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.campaign-task-message-cell {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.campaign-task-actions-cell {
+  text-align: right;
+}
+
+.campaign-task-actions-cell form {
+  display: inline-flex;
+  margin: 0;
 }
 
 .table-pagination {
@@ -1392,8 +1487,13 @@ a {
   .grid-cols-3,
   .grid-cols-4,
   .device-detail-top-grid,
+  .campaign-detail-grid,
   .task-launch-grid {
     grid-template-columns: 1fr;
+  }
+
+  .campaign-count-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .form-grid {

@@ -96,13 +96,12 @@
 			{{if ne .ReleaseBadge ""}}<span class="nav-badge">{{.ReleaseBadge}}</span>{{end}}
 		</a>
 		<a
-			class="nav-item {{if eq .Active "ota"}}is-active{{end}}"
-			{{if eq .Active "ota"}}aria-current="page"{{end}}
-			href="/ota-updates?organisation_id={{.Shell.SelectedOrganisationID}}"
+			class="nav-item {{if eq .Active "campaigns"}}is-active{{end}}"
+			{{if eq .Active "campaigns"}}aria-current="page"{{end}}
+			href="/campaigns?organisation_id={{.Shell.SelectedOrganisationID}}"
 		>
 			<span class="nav-icon" aria-hidden="true">{{template "icon_radio_tower" .}}</span>
-			<span class="nav-label">OTA updates</span>
-			{{if ne .OTABadge ""}}<span class="nav-badge">{{.OTABadge}}</span>{{end}}
+			<span class="nav-label">Campaigns</span>
 		</a>
 		<a
 			class="nav-item {{if eq .Active "organisations"}}is-active{{end}}"
@@ -167,9 +166,10 @@
 		{{else}}
 			<span class="button button-secondary button-small is-disabled">Next</span>
 		{{end}}
-		<form class="page-size-form" method="get" action="/devices">
+		<form class="page-size-form" method="get" action="{{.Pagination.FormAction}}">
 			<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
-			{{if .Query}}<input type="hidden" name="q" value="{{.Query}}">{{end}}
+			{{if .Pagination.Query}}<input type="hidden" name="q" value="{{.Pagination.Query}}">{{end}}
+			{{if .Pagination.Status}}<input type="hidden" name="status" value="{{.Pagination.Status}}">{{end}}
 			<label>
 				<span>Rows</span>
 				<select name="page_size" onchange="this.form.submit()">

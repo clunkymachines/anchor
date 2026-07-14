@@ -1,0 +1,128 @@
+{{template "app_page_start" (dict "Title" (printf "%s - Anchor" .Campaign.Name) "Shell" .Shell "Active" "campaigns" "OrganisationAction" (printf "/campaigns/%d" .Campaign.ID) "SearchPlaceholder" "Search campaigns" "DeviceBadge" "" "ReleaseBadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">{{.Campaign.Name}}</h1>
+							<p class="page-subtitle">{{.Campaign.TargetCount}} targets · {{.Campaign.Summary}}</p>
+						</div>
+						<div class="page-actions">
+							<a class="button button-secondary" href="/campaigns?organisation_id={{.Campaign.OrganisationID}}">Back to campaigns</a>
+							{{if eq .Campaign.Status "Running"}}
+								<form method="post" action="{{.Campaign.CancelAction}}">
+									<input type="hidden" name="organisation_id" value="{{.Campaign.OrganisationID}}">
+									<button class="button button-danger" type="submit" onclick="return confirm('Cancel campaign {{.Campaign.Name}}? This cancels all non-terminal linked tasks.');">Cancel campaign</button>
+								</form>
+							{{end}}
+						</div>
+					</header>
+
+					<div class="campaign-detail-grid">
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Campaign</h2>
+									<p class="card-subtitle">{{.Campaign.Type}} task</p>
+								</div>
+								<span class="status-pill {{.Campaign.StatusClass}}">{{.Campaign.Status}}</span>
+							</header>
+							<div class="card-body">
+								<dl class="key-value-list">
+									<div class="key-value-row">
+										<dt class="key-value-label">TTL</dt>
+										<dd class="key-value-value value-mono">{{.Campaign.TTLDays}} days</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Created</dt>
+										<dd class="key-value-value value-mono">{{localTime .Campaign.CreatedAt}}</dd>
+									</div>
+									{{if .Campaign.FinishedAt}}
+										<div class="key-value-row">
+											<dt class="key-value-label">Finished</dt>
+											<dd class="key-value-value value-mono">{{localTime .Campaign.FinishedAt}}</dd>
+										</div>
+									{{end}}
+									{{if .Campaign.CanceledAt}}
+										<div class="key-value-row">
+											<dt class="key-value-label">Canceled</dt>
+											<dd class="key-value-value value-mono">{{localTime .Campaign.CanceledAt}}</dd>
+										</div>
+									{{end}}
+								</dl>
+							</div>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
+									<h2 class="card-title">Results</h2>
+									<p class="card-subtitle">{{.Campaign.TargetCount}} target tasks</p>
+								</div>
+							</header>
+							<div class="card-body">
+								<div class="campaign-count-grid">
+									<div class="campaign-count"><span>Queued</span><strong>{{.Campaign.Queued}}</strong></div>
+									<div class="campaign-count"><span>Pending</span><strong>{{.Campaign.Pending}}</strong></div>
+									<div class="campaign-count"><span>In progress</span><strong>{{.Campaign.InProgress}}</strong></div>
+									<div class="campaign-count"><span>Success</span><strong>{{.Campaign.Success}}</strong></div>
+									<div class="campaign-count"><span>Failure</span><strong>{{.Campaign.Failure}}</strong></div>
+									<div class="campaign-count"><span>Expired</span><strong>{{.Campaign.Expired}}</strong></div>
+									<div class="campaign-count"><span>Canceled</span><strong>{{.Campaign.Canceled}}</strong></div>
+								</div>
+							</div>
+						</section>
+					</div>
+
+					<section class="card data-table-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">Linked tasks</h2>
+								<p class="card-subtitle">{{.Pagination.TotalRows}} tasks</p>
+							</div>
+						</header>
+						<div class="data-table-wrapper">
+							<table class="data-table campaign-tasks-table">
+								<thead>
+									<tr>
+										<th class="campaign-task-id" scope="col">ID</th>
+										<th class="campaign-task-device" scope="col">Device</th>
+										<th class="campaign-task-model" scope="col">Model</th>
+										<th class="campaign-task-status" scope="col">Status</th>
+										<th class="campaign-task-message" scope="col">Message</th>
+										<th class="campaign-task-date" scope="col">Expires</th>
+										<th class="campaign-task-date" scope="col">Completed</th>
+										<th class="campaign-task-actions" scope="col">Actions</th>
+									</tr>
+								</thead>
+								<tbody>
+									{{range .Tasks}}
+										<tr>
+											<td class="value-mono">{{.ID}}</td>
+											<td class="value-mono"><a class="table-link" href="{{.DeviceURL}}">{{.DeviceID}}</a></td>
+											<td>{{.ModelName}}</td>
+											<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
+											<td class="campaign-task-message-cell">{{if .StatusMessage}}{{.StatusMessage}}{{else}}<span class="muted-text">None</span>{{end}}</td>
+											<td class="value-mono">{{localTime .ExpiresAt}}</td>
+											<td class="value-mono">{{if .CompletedAt}}{{localTime .CompletedAt}}{{else}}<span class="muted-text">Not completed</span>{{end}}</td>
+											<td class="campaign-task-actions-cell">
+												{{if not .CompletedAt}}
+													<form method="post" action="{{.CancelAction}}">
+														<input type="hidden" name="organisation_id" value="{{$.Campaign.OrganisationID}}">
+														<button class="button button-secondary button-small" type="submit" onclick="return confirm('Cancel task {{.ID}} only?');">Cancel task</button>
+													</form>
+												{{else}}
+													<span class="muted-text">Finished</span>
+												{{end}}
+											</td>
+										</tr>
+									{{else}}
+										<tr>
+											<td class="empty-table-cell" colspan="8">No linked tasks.</td>
+										</tr>
+									{{end}}
+								</tbody>
+							</table>
+						</div>
+						{{template "table_pagination" .}}
+					</section>
+				</main>
+{{template "app_page_end" .}}

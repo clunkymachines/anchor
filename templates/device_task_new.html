@@ -1,4 +1,4 @@
-{{template "app_page_start" (dict "Title" (printf "Launch task - %s - Anchor" .Device.ID) "Shell" .Shell "Active" "devices" "OrganisationAction" (printf "/devices/%s/tasks/new" .Device.ID) "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+{{template "app_page_start" (dict "Title" (printf "Launch task - %s - Anchor" .Device.ID) "Shell" .Shell "Active" "devices" "OrganisationAction" (printf "/devices/%s/tasks/new" .Device.ID) "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "")}}
 				<main class="app-workspace">
 					<header class="page-header">
 						<div>
@@ -25,6 +25,7 @@
 							<form class="card-body device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks">
 								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
 								<input type="hidden" name="task_type" value="read">
+								{{template "task_ttl_field" .}}
 								<label class="field">
 									<span class="field-label">Paths</span>
 									<textarea class="textarea task-textarea" name="read_paths" required placeholder="battery.percent&#10;firmware.version">{{.ReadPaths}}</textarea>
@@ -45,6 +46,7 @@
 							<form class="card-body device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks">
 								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
 								<input type="hidden" name="task_type" value="write">
+								{{template "task_ttl_field" .}}
 								<label class="field">
 									<span class="field-label">Values</span>
 									<textarea class="textarea task-textarea task-json-textarea" name="write_values" required>{{.WriteValues}}</textarea>
@@ -65,6 +67,7 @@
 							<form class="card-body device-task-form" method="post" action="/devices/{{.Device.ID}}/tasks">
 								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
 								<input type="hidden" name="task_type" value="fota">
+								{{template "task_ttl_field" .}}
 								<label class="field">
 									<span class="field-label">Release</span>
 									<select class="select" name="release_id" required {{if not .Releases}}disabled{{end}}>
@@ -83,3 +86,10 @@
 					</div>
 				</main>
 {{template "app_page_end" .}}
+
+{{define "task_ttl_field"}}
+<label class="field">
+	<span class="field-label">TTL days</span>
+	<input class="input" type="number" name="ttl_days" min="1" step="1" value="7" required>
+</label>
+{{end}}

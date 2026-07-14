@@ -223,6 +223,48 @@ function startEventStreams() {
   return streams;
 }
 
+// Device selection
+
+function deviceSelectionInputs(root = document) {
+  const form = root.querySelector("#campaign-selection-form");
+  if (!form) {
+    return [];
+  }
+  return all('input[name="device_id"][form="campaign-selection-form"]', root);
+}
+
+function updateDeviceSelectionState(root = document) {
+  const checkboxes = deviceSelectionInputs(root);
+  const selectedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+  const submit = root.querySelector("[data-campaign-submit]");
+  if (submit) {
+    submit.disabled = selectedCount === 0;
+  }
+
+  const selectAll = root.querySelector("[data-select-all-visible]");
+  if (selectAll) {
+    selectAll.checked = checkboxes.length > 0 && selectedCount === checkboxes.length;
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < checkboxes.length;
+  }
+}
+
+function handleDeviceSelectionChange(event) {
+  const selectAll = closestEventTarget(event, "[data-select-all-visible]");
+  if (selectAll) {
+    deviceSelectionInputs().forEach((checkbox) => {
+      checkbox.checked = selectAll.checked;
+    });
+    updateDeviceSelectionState();
+    return true;
+  }
+
+  if (closestEventTarget(event, 'input[name="device_id"][form="campaign-selection-form"]')) {
+    updateDeviceSelectionState();
+    return true;
+  }
+  return false;
+}
+
 // HTMX swaps
 
 function rememberTelemetryTabBeforeSwap(event) {
@@ -284,8 +326,11 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+document.addEventListener("change", handleDeviceSelectionChange);
+
 document.addEventListener("DOMContentLoaded", () => {
   formatLocalTimes();
+  updateDeviceSelectionState();
 
   const eventStreams = startEventStreams();
   window.addEventListener("beforeunload", () => {

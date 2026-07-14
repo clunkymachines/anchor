@@ -222,11 +222,34 @@ func (c *Client) updateTaskStatus(ctx context.Context, deviceID string, organisa
 		c.logger.Warn("mqtt client task status update failed", "device_id", deviceID, "organisation_id", organisationID, "task", update.taskID, "status", update.status, "err", err)
 		return true
 	}
+	if update.status == db.DeviceTaskStatusSuccess || update.status == db.DeviceTaskStatusFailure {
+		c.processTaskQueue(ctx)
+	}
 
 	if update.message != "" {
 		c.logger.Info("mqtt client task status updated", "device_id", deviceID, "organisation_id", organisationID, "task", update.taskID, "status", update.status, "msg", update.message)
 	}
 	return true
+}
+
+func (c *Client) processTaskQueue(ctx context.Context) {
+	now := time.Now().UTC()
+	if _, err := c.store.ExpireOverdueDeviceTasks(ctx, now); err != nil {
+		c.logger.Warn("mqtt client task expiry failed", "err", err)
+	}
+	promoted, err := c.store.PromoteQueuedDeviceTasks(ctx, now)
+	if err != nil {
+		c.logger.Warn("mqtt client task promotion failed", "err", err)
+		return
+	}
+	for _, task := range promoted {
+		if err := c.PublishDeviceTask(ctx, task.Task, task.OrganisationID); err != nil {
+			c.logger.Warn("mqtt client promoted task publish failed", "device_id", task.Task.DeviceID, "organisation_id", task.OrganisationID, "task", task.Task.ID, "err", err)
+		}
+	}
+	if _, err := c.store.FinalizeFinishedCampaigns(ctx, now); err != nil {
+		c.logger.Warn("mqtt client campaign finalization failed", "err", err)
+	}
 }
 
 type taskStatusUpdate struct {

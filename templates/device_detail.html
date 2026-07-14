@@ -1,4 +1,4 @@
-{{template "app_page_start" (dict "Title" (printf "%s - Anchor" .Device.ID) "Shell" .Shell "Active" "devices" "OrganisationAction" (printf "/devices/%s" .Device.ID) "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "" "OTABadge" "")}}
+{{template "app_page_start" (dict "Title" (printf "%s - Anchor" .Device.ID) "Shell" .Shell "Active" "devices" "OrganisationAction" (printf "/devices/%s" .Device.ID) "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "")}}
 				<main class="app-workspace">
 					<header class="page-header">
 						<div>
@@ -194,7 +194,9 @@
 					<th scope="col">Task</th>
 					<th scope="col">Status</th>
 					<th scope="col">Message</th>
+					<th scope="col">Campaign</th>
 					<th scope="col">Created</th>
+					<th scope="col">Expires</th>
 					<th scope="col">Completed</th>
 					<th scope="col">Actions</th>
 				</tr>
@@ -211,7 +213,11 @@
 						<td class="table-cell-wrap">
 							{{if .StatusMessage}}{{.StatusMessage}}{{else}}<span class="muted-text">None</span>{{end}}
 						</td>
+						<td>
+							{{if .CampaignURL}}<a class="table-link" href="{{.CampaignURL}}">Campaign {{.CampaignID}}</a>{{else}}<span class="muted-text">Manual</span>{{end}}
+						</td>
 						<td class="value-mono">{{localTime .CreatedAt}}</td>
+						<td class="value-mono">{{if .ExpiresAt}}{{localTime .ExpiresAt}}{{else}}<span class="muted-text">None</span>{{end}}</td>
 						<td class="value-mono">
 							{{if .CompletedAt}}{{localTime .CompletedAt}}{{else}}<span class="muted-text">Not completed</span>{{end}}
 						</td>
@@ -232,7 +238,7 @@
 					</tr>
 				{{else}}
 					<tr>
-						<td class="empty-table-cell" colspan="8">No tasks.</td>
+						<td class="empty-table-cell" colspan="10">No tasks.</td>
 					</tr>
 				{{end}}
 			</tbody>

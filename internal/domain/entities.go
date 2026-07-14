@@ -239,14 +239,54 @@ type DeviceTask struct {
 	Type string
 	// ParametersJSON stores validated, protocol-neutral task intent.
 	ParametersJSON string
-	// Status is pending, in_progress, success, failure, or canceled.
+	// Status is queued, pending, in_progress, success, failure, expired, or canceled.
 	Status string
 	// StatusMessage is the latest optional device-reported task message.
 	StatusMessage string
+	// CampaignID links the task to a campaign when it was campaign-created.
+	CampaignID *int64
 	// CreatedAt is when the task was created.
 	CreatedAt string
+	// ExpiresAt is when the task times out if it is still non-terminal.
+	ExpiresAt string
 	// CompletedAt is set when the task reaches a terminal status.
 	CompletedAt string
+}
+
+type Campaign struct {
+	ID               int64
+	OrganisationID   int64
+	Name             string
+	TaskType         string
+	ParametersJSON   string
+	TaskTTLSeconds   int64
+	Status           string
+	CreatedAt        string
+	FinishedAt       string
+	CanceledAt       string
+	TargetCount      int
+	ParameterSummary string
+	Counts           TaskStatusCounts
+}
+
+type CampaignTaskRow struct {
+	Task            DeviceTask
+	DeviceModelID   int64
+	DeviceModelName string
+}
+
+type TaskStatusCounts struct {
+	Queued     int
+	Pending    int
+	InProgress int
+	Success    int
+	Failure    int
+	Expired    int
+	Canceled   int
+}
+
+func (c TaskStatusCounts) Total() int {
+	return c.Queued + c.Pending + c.InProgress + c.Success + c.Failure + c.Expired + c.Canceled
 }
 
 type MQTTPrincipal struct {
@@ -361,25 +401,6 @@ type ReleaseCVEWaiver struct {
 	CreatedAt string
 	// UpdatedAt is when this waiver was last updated.
 	UpdatedAt string
-}
-
-type OTADeployment struct {
-	// ID is the internal OTA deployment identifier.
-	ID int64
-	// OrganisationID identifies the organisation that owns the deployment.
-	OrganisationID int64
-	// ReleaseID identifies the software release being deployed.
-	ReleaseID int64
-	// ReleaseModelName is the device model name for the release being deployed.
-	ReleaseModelName string
-	// ReleaseVersion is the version string being deployed.
-	ReleaseVersion string
-	// Target is the deployment target, such as a fleet, organisation, or filter.
-	Target string
-	// Status is the current deployment state.
-	Status string
-	// CreatedAt is the deployment creation timestamp.
-	CreatedAt string
 }
 
 type Session struct {

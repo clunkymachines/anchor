@@ -135,12 +135,26 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 	assertColumns(t, store, "device_tasks", []string{
 		"id",
 		"device_id",
+		"campaign_id",
 		"task_type",
 		"parameters_json",
 		"status",
 		"status_message",
 		"created_at",
+		"expires_at",
 		"completed_at",
+	})
+	assertColumns(t, store, "campaigns", []string{
+		"id",
+		"organisation_id",
+		"name",
+		"task_type",
+		"parameters_json",
+		"task_ttl_seconds",
+		"status",
+		"created_at",
+		"finished_at",
+		"canceled_at",
 	})
 	assertColumns(t, store, "software_releases", []string{
 		"id",
@@ -167,14 +181,6 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"total_size_bytes",
 		"created_at",
 		"updated_at",
-	})
-	assertColumns(t, store, "ota_deployments", []string{
-		"id",
-		"organisation_id",
-		"release_id",
-		"target",
-		"status",
-		"created_at",
 	})
 	assertColumns(t, store, "cve_scan_runs", []string{
 		"id",
@@ -541,7 +547,7 @@ func TestOrganisationInvitations(t *testing.T) {
 	}
 }
 
-func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
+func TestListSoftwareReleases(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -585,7 +591,7 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected duplicate model/version release conflict, got %v", err)
 	}
-	otherReleaseID, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+	_, err = store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
 		OrganisationID:      otherOrganisationID,
 		DeviceModelID:       otherDeviceModelID,
 		Version:             "9.9.9",
@@ -596,15 +602,6 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create other software release: %v", err)
-	}
-	if _, err := store.writeDB.ExecContext(ctx, `INSERT INTO ota_deployments (organisation_id, release_id, target, status) VALUES (?, ?, 'all devices', 'running')`, organisationID, releaseID); err != nil {
-		t.Fatalf("insert running ota deployment: %v", err)
-	}
-	if _, err := store.writeDB.ExecContext(ctx, `INSERT INTO ota_deployments (organisation_id, release_id, target, status) VALUES (?, ?, 'lab devices', 'completed')`, organisationID, releaseID); err != nil {
-		t.Fatalf("insert completed ota deployment: %v", err)
-	}
-	if _, err := store.writeDB.ExecContext(ctx, `INSERT INTO ota_deployments (organisation_id, release_id, target, status) VALUES (?, ?, 'other devices', 'running')`, otherOrganisationID, otherReleaseID); err != nil {
-		t.Fatalf("insert other ota deployment: %v", err)
 	}
 
 	releases, err := store.ListSoftwareReleases(ctx, organisationID)
@@ -624,18 +621,6 @@ func TestListSoftwareReleasesAndOngoingOTADeployments(t *testing.T) {
 	}
 	if release.ID != releaseID || release.DeviceModelID != deviceModelID || release.DeviceModelName != "Gateway" || release.ArtifactPath != "1/firmware.bin" {
 		t.Fatalf("unexpected software release: %#v", release)
-	}
-
-	deployments, err := store.ListOngoingOTADeployments(ctx, organisationID)
-	if err != nil {
-		t.Fatalf("list ongoing ota deployments: %v", err)
-	}
-	if len(deployments) != 1 || deployments[0].OrganisationID != organisationID || deployments[0].Status != "running" || deployments[0].ReleaseVersion != "1.2.3" {
-		t.Fatalf("unexpected deployments: %#v", deployments)
-	}
-
-	if _, err := store.writeDB.ExecContext(ctx, `INSERT INTO ota_deployments (organisation_id, release_id, target, status) VALUES (?, ?, 'bad link', 'running')`, organisationID, otherReleaseID); err == nil {
-		t.Fatal("expected cross-organisation release deployment to fail")
 	}
 }
 
@@ -1624,27 +1609,10 @@ func TestCreateAndListOngoingDeviceTasks(t *testing.T) {
 		DeviceID:       "device-001",
 		Type:           "write",
 		ParametersJSON: `{"values":[{"path":"led","value":"on"}]}`,
-		Status:         DeviceTaskStatusInProgress,
 		CreatedAt:      "2026-06-04T08:01:00Z",
 	}, organisationID)
 	if err != nil {
 		t.Fatalf("create write task: %v", err)
-	}
-	completedID, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-		DeviceID:       "device-001",
-		Type:           "fota",
-		ParametersJSON: `{"release_id":1}`,
-		Status:         DeviceTaskStatusPending,
-		CreatedAt:      "2026-06-04T08:02:00Z",
-	}, organisationID)
-	if err != nil {
-		t.Fatalf("create completed task: %v", err)
-	}
-	if err := store.UpdateDeviceTaskStatus(ctx, completedID, "device-001", organisationID, DeviceTaskStatusSuccess, "2026-06-04T08:03:00Z", "done"); err != nil {
-		t.Fatalf("complete task: %v", err)
-	}
-	if err := store.UpdateDeviceTaskStatus(ctx, completedID, "device-001", organisationID, DeviceTaskStatusInProgress, "", "again"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected terminal task regression to be rejected, got %v", err)
 	}
 
 	tasks, err := store.ListOngoingDeviceTasks(ctx, "device-001", organisationID)
@@ -1654,8 +1622,8 @@ func TestCreateAndListOngoingDeviceTasks(t *testing.T) {
 	if len(tasks) != 2 {
 		t.Fatalf("expected two ongoing tasks, got %#v", tasks)
 	}
-	if tasks[0].ID != writeID || tasks[0].Status != DeviceTaskStatusInProgress {
-		t.Fatalf("expected newest in-progress task first, got %#v", tasks[0])
+	if tasks[0].ID != writeID || tasks[0].Status != DeviceTaskStatusQueued {
+		t.Fatalf("expected newest queued task first, got %#v", tasks[0])
 	}
 	if tasks[1].ID != readID || tasks[1].ParametersJSON != `{"paths":["battery"]}` {
 		t.Fatalf("expected pending read task second, got %#v", tasks[1])
@@ -1723,18 +1691,22 @@ func TestListActiveAndRecentDeviceTasksIncludesLastThreeFinished(t *testing.T) {
 
 	var finishedIDs []int64
 	for i := 1; i <= 4; i++ {
-		id, err := store.CreateDeviceTask(ctx, domain.DeviceTask{
-			DeviceID:       "device-001",
-			Type:           "fota",
-			ParametersJSON: fmt.Sprintf(`{"release_id":%d}`, i),
-			Status:         DeviceTaskStatusPending,
-			CreatedAt:      fmt.Sprintf("2026-06-07T08:0%d:00Z", i),
-		}, organisationID)
+		result, err := store.writeDB.ExecContext(ctx, `
+			INSERT INTO device_tasks (device_id, task_type, parameters_json, status, created_at, expires_at, completed_at, status_message)
+			VALUES (?, 'fota', ?, 'success', ?, ?, ?, 'done')
+		`,
+			"device-001",
+			fmt.Sprintf(`{"release_id":%d}`, i),
+			fmt.Sprintf("2026-06-07T08:0%d:00Z", i),
+			fmt.Sprintf("2026-06-14T08:0%d:00Z", i),
+			fmt.Sprintf("2026-06-07T08:1%d:00Z", i),
+		)
 		if err != nil {
-			t.Fatalf("create finished task %d: %v", i, err)
+			t.Fatalf("insert finished task %d: %v", i, err)
 		}
-		if err := store.UpdateDeviceTaskStatus(ctx, id, "device-001", organisationID, DeviceTaskStatusSuccess, fmt.Sprintf("2026-06-07T08:1%d:00Z", i), "done"); err != nil {
-			t.Fatalf("finish task %d: %v", i, err)
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("finished task id %d: %v", i, err)
 		}
 		finishedIDs = append(finishedIDs, id)
 	}
