@@ -2,18 +2,28 @@ package domain
 
 import "strings"
 
+// CVEImpactStatusValue identifies the derived vulnerability state of a release or device.
 type CVEImpactStatusValue string
 
 const (
-	CVEStatusNoSBOM         CVEImpactStatusValue = "no_sbom"
-	CVEStatusScanPending    CVEImpactStatusValue = "scan_pending"
-	CVEStatusNotScanned     CVEImpactStatusValue = "not_scanned"
-	CVEStatusImpacted       CVEImpactStatusValue = "impacted"
-	CVEStatusNotImpacted    CVEImpactStatusValue = "not_impacted"
-	CVEStatusScanFailed     CVEImpactStatusValue = "scan_failed"
+	// CVEStatusNoSBOM means no vulnerability scan input is available.
+	CVEStatusNoSBOM CVEImpactStatusValue = "no_sbom"
+	// CVEStatusScanPending means the latest scan is queued or running.
+	CVEStatusScanPending CVEImpactStatusValue = "scan_pending"
+	// CVEStatusNotScanned means an SBOM exists but no usable scan result does.
+	CVEStatusNotScanned CVEImpactStatusValue = "not_scanned"
+	// CVEStatusImpacted means the latest usable scan has active findings.
+	CVEStatusImpacted CVEImpactStatusValue = "impacted"
+	// CVEStatusNotImpacted means the latest usable scan has no active findings.
+	CVEStatusNotImpacted CVEImpactStatusValue = "not_impacted"
+	// CVEStatusScanFailed means no successful result exists and the latest scan failed.
+	CVEStatusScanFailed CVEImpactStatusValue = "scan_failed"
+	// CVEStatusUnknownRelease means device firmware does not map to a known release.
 	CVEStatusUnknownRelease CVEImpactStatusValue = "unknown_release"
 )
 
+// CVEImpactStatus summarizes current active findings and the scans used to
+// derive them.
 type CVEImpactStatus struct {
 	Status                 CVEImpactStatusValue
 	ActiveCVECount         int
@@ -25,6 +35,9 @@ type CVEImpactStatus struct {
 	MatchedReleaseID       int64
 }
 
+// CalculateReleaseCVEStatus derives a release's current vulnerability state.
+// When the latest scan failed after an earlier success, it retains the earlier
+// findings and reports a warning.
 func CalculateReleaseCVEStatus(hasSBOM bool, scanRuns []CVEScanRun, activeFindings []CVEScanFinding) CVEImpactStatus {
 	if !hasSBOM {
 		return CVEImpactStatus{Status: CVEStatusNoSBOM}
@@ -68,6 +81,8 @@ func CalculateReleaseCVEStatus(hasSBOM bool, scanRuns []CVEScanRun, activeFindin
 	return status
 }
 
+// CalculateDeviceCVEStatus returns releaseStatus when the device firmware maps
+// to a known release, or an unknown-release state otherwise.
 func CalculateDeviceCVEStatus(releaseMatched bool, releaseStatus CVEImpactStatus) CVEImpactStatus {
 	if !releaseMatched {
 		return CVEImpactStatus{Status: CVEStatusUnknownRelease}

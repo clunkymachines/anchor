@@ -47,7 +47,9 @@ func (s *Server) mqttIntegrationStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "integration query error", http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "mqtt_integration_status", s.integrationsPageDataFor(shellPageData{}, config, "", ""))
+	if err := s.render(w, http.StatusOK, s.integrationsPageDataFor(shellPageData{}, config, "", ""), "mqtt_integration_status"); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) mqttIntegrationPost(w http.ResponseWriter, r *http.Request) {
@@ -199,5 +201,7 @@ func mqttConnectionStatusView(state string) (string, string) {
 }
 
 func (s *Server) renderIntegrations(w http.ResponseWriter, data integrationsPageData) {
-	s.render(w, "integrations.html", data)
+	if err := s.render(w, http.StatusOK, data, "integrations.html"); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }

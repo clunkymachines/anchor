@@ -29,6 +29,8 @@ type Manager struct {
 	cancel     context.CancelFunc
 }
 
+// NewManager constructs a runtime MQTT integration manager. A nil logger uses
+// slog.Default.
 func NewManager(store *db.Store, fotaDownloadBaseURL string, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()

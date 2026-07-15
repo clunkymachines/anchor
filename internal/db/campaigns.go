@@ -13,12 +13,17 @@ import (
 )
 
 const (
-	CampaignStatusRunning  = domain.CampaignStatusRunning
+	// CampaignStatusRunning aliases the domain running status for persistence callers.
+	CampaignStatusRunning = domain.CampaignStatusRunning
+	// CampaignStatusFinished aliases the domain finished status for persistence callers.
 	CampaignStatusFinished = domain.CampaignStatusFinished
+	// CampaignStatusCanceled aliases the domain canceled status for persistence callers.
 	CampaignStatusCanceled = domain.CampaignStatusCanceled
-	MaxCampaignTargets     = 100
+	// MaxCampaignTargets limits devices selected for one campaign.
+	MaxCampaignTargets = 100
 )
 
+// CampaignCreate contains campaign metadata and target device IDs to validate and persist.
 type CampaignCreate struct {
 	OrganisationID int64
 	Name           string
@@ -29,11 +34,14 @@ type CampaignCreate struct {
 	CreatedAt      time.Time
 }
 
+// CampaignCreateResult contains the created campaign and tasks immediately ready
+// for publication; remaining tasks stay queued per device.
 type CampaignCreateResult struct {
 	Campaign     domain.Campaign
 	PendingTasks []domain.DeviceTask
 }
 
+// CampaignTaskQuery filters and paginates tasks belonging to one campaign.
 type CampaignTaskQuery struct {
 	OrganisationID int64
 	CampaignID     int64
@@ -42,11 +50,14 @@ type CampaignTaskQuery struct {
 	PageSize       int
 }
 
+// CampaignTaskPage contains one page of campaign tasks and its pagination metadata.
 type CampaignTaskPage struct {
 	Rows       []domain.CampaignTaskRow
 	Pagination Pagination
 }
 
+// CampaignTargetDevices validates that every requested device belongs to the
+// organisation and returns devices in the same order as deviceIDs.
 func (s *Store) CampaignTargetDevices(ctx context.Context, organisationID int64, deviceIDs []string) ([]domain.Device, error) {
 	if err := validateCampaignDeviceIDs(deviceIDs); err != nil {
 		return nil, err
@@ -96,6 +107,8 @@ func (s *Store) CampaignTargetDevices(ctx context.Context, organisationID int64,
 	return devices, nil
 }
 
+// CreateCampaign atomically creates a running campaign and one scheduled task
+// per target device, then notifies task subscribers.
 func (s *Store) CreateCampaign(ctx context.Context, input CampaignCreate) (CampaignCreateResult, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
@@ -268,6 +281,7 @@ func validateCampaignDeviceIDs(deviceIDs []string) error {
 	return nil
 }
 
+// ListCampaigns returns an organisation's campaigns newest first with task counts.
 func (s *Store) ListCampaigns(ctx context.Context, organisationID int64) ([]domain.Campaign, error) {
 	query := `
 		SELECT c.id, c.organisation_id, c.name, c.task_type, c.parameters_json, c.task_ttl_seconds, c.status, c.created_at, c.finished_at, c.canceled_at,
@@ -305,6 +319,7 @@ func (s *Store) ListCampaigns(ctx context.Context, organisationID int64) ([]doma
 	return campaigns, rows.Err()
 }
 
+// Campaign returns one organisation-scoped campaign with its task counts.
 func (s *Store) Campaign(ctx context.Context, organisationID int64, campaignID int64) (domain.Campaign, error) {
 	query := `
 		SELECT c.id, c.organisation_id, c.name, c.task_type, c.parameters_json, c.task_ttl_seconds, c.status, c.created_at, c.finished_at, c.canceled_at,
@@ -332,6 +347,7 @@ func (s *Store) Campaign(ctx context.Context, organisationID int64, campaignID i
 	return campaign, err
 }
 
+// ListCampaignTasks returns a filtered page of tasks for one organisation-scoped campaign.
 func (s *Store) ListCampaignTasks(ctx context.Context, query CampaignTaskQuery) (CampaignTaskPage, error) {
 	countQuery := `SELECT COUNT(*) FROM device_tasks t JOIN devices d ON d.id = t.device_id WHERE t.campaign_id = ? AND d.organisation_id = ?`
 	args := []any{query.CampaignID, query.OrganisationID}
@@ -412,6 +428,8 @@ func (s *Store) ListCampaignTasks(ctx context.Context, query CampaignTaskQuery) 
 	return CampaignTaskPage{Rows: result, Pagination: pagination}, nil
 }
 
+// CancelCampaign atomically cancels a running campaign and all its non-terminal
+// tasks. It returns the affected device IDs after notifying their subscribers.
 func (s *Store) CancelCampaign(ctx context.Context, organisationID int64, campaignID int64, now time.Time) ([]string, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -481,6 +499,8 @@ func (s *Store) CancelCampaign(ctx context.Context, organisationID int64, campai
 	return deviceIDs, nil
 }
 
+// FinalizeFinishedCampaigns marks running campaigns as finished when none of
+// their tasks remain non-terminal and returns the number changed.
 func (s *Store) FinalizeFinishedCampaigns(ctx context.Context, now time.Time) (int64, error) {
 	query := `
 		UPDATE campaigns

@@ -15,20 +15,29 @@ import (
 )
 
 const (
-	OrganisationRoleAdmin  = "admin"
+	// OrganisationRoleAdmin grants organisation management permissions.
+	OrganisationRoleAdmin = "admin"
+	// OrganisationRoleMember grants standard organisation access.
 	OrganisationRoleMember = "member"
-	InvitationTTL          = 7 * 24 * time.Hour
+	// InvitationTTL is the validity period of a new organisation invitation.
+	InvitationTTL = 7 * 24 * time.Hour
 )
 
+// ErrLastOrganisationAdmin prevents removing an organisation's final administrator.
 var ErrLastOrganisationAdmin = errors.New("organisation must have at least one admin")
+
+// ErrInvalidInvitation reports an absent, expired, accepted, or otherwise unusable invitation.
 var ErrInvalidInvitation = errors.New("invalid invitation")
 
+// OrganisationInviteResult describes either an existing-user membership change
+// or a new invitation token.
 type OrganisationInviteResult struct {
 	ExistingUser bool
 	Token        string
 	Email        string
 }
 
+// InvitationAcceptance identifies the user and organisation joined through an invitation.
 type InvitationAcceptance struct {
 	UserID         int64
 	OrganisationID int64

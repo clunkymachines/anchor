@@ -10,7 +10,10 @@ import (
 	"anchor/internal/domain"
 )
 
+// ErrNotFound reports that no row matched the requested identity and scope.
 var ErrNotFound = errors.New("not found")
+
+// ErrConflict reports that a uniqueness or ownership constraint was violated.
 var ErrConflict = errors.New("conflict")
 
 func (s *Store) UserCount(ctx context.Context) (int, error) {

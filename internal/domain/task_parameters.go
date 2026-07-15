@@ -10,31 +10,42 @@ import (
 )
 
 const (
-	TaskTypeRead  = "read"
+	// TaskTypeRead requests current values for one or more device paths.
+	TaskTypeRead = "read"
+	// TaskTypeWrite updates one or more writable device paths.
 	TaskTypeWrite = "write"
-	TaskTypeFOTA  = "fota"
+	// TaskTypeFOTA requests installation of a firmware release.
+	TaskTypeFOTA = "fota"
 
+	// TaskPathMaxEntries limits paths or values in one task.
 	TaskPathMaxEntries = 32
-	TaskPathMaxLength  = 128
+	// TaskPathMaxLength limits an individual task path in bytes.
+	TaskPathMaxLength = 128
 )
 
+// ReadTaskParameters is the JSON payload for a read task.
 type ReadTaskParameters struct {
 	Paths []string `json:"paths"`
 }
 
+// WriteTaskParameters is the JSON payload for a write task.
 type WriteTaskParameters struct {
 	Values []WriteTaskValue `json:"values"`
 }
 
+// WriteTaskValue associates a normalized device path with an arbitrary JSON value.
 type WriteTaskValue struct {
 	Path  string          `json:"path"`
 	Value json.RawMessage `json:"value"`
 }
 
+// FOTATaskParameters identifies the firmware release installed by a FOTA task.
 type FOTATaskParameters struct {
 	ReleaseID int64 `json:"release_id"`
 }
 
+// BuildReadTaskParameters validates and normalizes paths, then returns the task
+// parameters as JSON.
 func BuildReadTaskParameters(paths []string) (string, error) {
 	normalized, err := normalizeTaskPaths(paths)
 	if err != nil {
@@ -43,6 +54,8 @@ func BuildReadTaskParameters(paths []string) (string, error) {
 	return marshalTaskParameters(ReadTaskParameters{Paths: normalized})
 }
 
+// BuildWriteTaskParameters validates a JSON write-task payload, normalizes its
+// paths and values, and returns canonical compact JSON.
 func BuildWriteTaskParameters(input string) (string, error) {
 	var params WriteTaskParameters
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
@@ -79,6 +92,7 @@ func BuildWriteTaskParameters(input string) (string, error) {
 	return marshalTaskParameters(params)
 }
 
+// BuildFOTATaskParameters validates releaseID and returns FOTA parameters as JSON.
 func BuildFOTATaskParameters(releaseID int64) (string, error) {
 	if releaseID <= 0 {
 		return "", errors.New("release_id is required")
@@ -86,6 +100,7 @@ func BuildFOTATaskParameters(releaseID int64) (string, error) {
 	return marshalTaskParameters(FOTATaskParameters{ReleaseID: releaseID})
 }
 
+// ParseFOTATaskParameters parses and validates FOTA parameters from JSON.
 func ParseFOTATaskParameters(parametersJSON string) (FOTATaskParameters, error) {
 	var params FOTATaskParameters
 	if err := json.Unmarshal([]byte(parametersJSON), &params); err != nil {
@@ -97,6 +112,8 @@ func ParseFOTATaskParameters(parametersJSON string) (FOTATaskParameters, error) 
 	return params, nil
 }
 
+// NormalizeTaskPath trims path and rejects empty, oversized, whitespace, and
+// control-character-containing paths.
 func NormalizeTaskPath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {

@@ -21,14 +21,20 @@ const (
 	DeviceTaskStatusCanceled   = domain.TaskStatusCanceled
 )
 
+// TaskTransitionOutcome describes whether a requested task state change was
+// applied, ignored as invalid or stale, or could not find the scoped task.
 type TaskTransitionOutcome string
 
 const (
-	TaskTransitionChanged  TaskTransitionOutcome = "changed"
-	TaskTransitionIgnored  TaskTransitionOutcome = "ignored"
+	// TaskTransitionChanged means the persisted task state changed.
+	TaskTransitionChanged TaskTransitionOutcome = "changed"
+	// TaskTransitionIgnored means the task exists but the requested transition is no longer valid.
+	TaskTransitionIgnored TaskTransitionOutcome = "ignored"
+	// TaskTransitionNotFound means no matching task exists in the requested scope.
 	TaskTransitionNotFound TaskTransitionOutcome = "not_found"
 )
 
+// CreateDeviceTaskOptions supplies task scheduling and lifetime values.
 type CreateDeviceTaskOptions struct {
 	Task        domain.DeviceTask
 	TTLSeconds  int64
@@ -36,11 +42,13 @@ type CreateDeviceTaskOptions struct {
 	CreatedTime time.Time
 }
 
+// PromotedTask pairs a newly pending task with the organisation needed to publish it.
 type PromotedTask struct {
 	Task           domain.DeviceTask
 	OrganisationID int64
 }
 
+// CreateDeviceTask creates a task with the default lifetime and returns its ID.
 func (s *Store) CreateDeviceTask(ctx context.Context, task domain.DeviceTask, organisationID int64) (int64, error) {
 	createdAt, err := parseOptionalRFC3339(task.CreatedAt, time.Now().UTC())
 	if err != nil {
@@ -59,6 +67,8 @@ func (s *Store) CreateDeviceTask(ctx context.Context, task domain.DeviceTask, or
 	return created.ID, nil
 }
 
+// CreateQueuedDeviceTask creates a task as pending when its device is idle, or
+// queued behind that device's current active task otherwise.
 func (s *Store) CreateQueuedDeviceTask(ctx context.Context, organisationID int64, opts CreateDeviceTaskOptions) (domain.DeviceTask, error) {
 	if opts.CreatedTime.IsZero() {
 		opts.CreatedTime = time.Now().UTC()
@@ -194,14 +204,18 @@ func (s *Store) nextTaskStatusTx(ctx context.Context, tx *sql.Tx, deviceID strin
 	return DeviceTaskStatusQueued, nil
 }
 
+// ListOngoingDeviceTasks returns queued, pending, and in-progress tasks newest first.
 func (s *Store) ListOngoingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) ([]domain.DeviceTask, error) {
 	return s.listDeviceTasks(ctx, deviceID, organisationID, "t.status IN ('queued', 'pending', 'in_progress')", "t.created_at DESC, t.id DESC", 0)
 }
 
+// ListPendingDeviceTasks returns publishable pending tasks oldest first.
 func (s *Store) ListPendingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) ([]domain.DeviceTask, error) {
 	return s.listDeviceTasks(ctx, deviceID, organisationID, "t.status = 'pending'", "t.created_at ASC, t.id ASC", 0)
 }
 
+// ListActiveAndRecentDeviceTasks returns all non-terminal tasks followed by the
+// most recently completed tasks. A non-positive completedLimit defaults to three.
 func (s *Store) ListActiveAndRecentDeviceTasks(ctx context.Context, deviceID string, organisationID int64, completedLimit int) ([]domain.DeviceTask, error) {
 	if completedLimit <= 0 {
 		completedLimit = 3
@@ -274,6 +288,8 @@ func (s *Store) queryDeviceTasks(ctx context.Context, query string, args ...any)
 	return tasks, rows.Err()
 }
 
+// UpdateDeviceTaskStatus applies a device-reported transition and maps a missing
+// scoped task to ErrNotFound. Invalid or stale transitions are treated as no-ops.
 func (s *Store) UpdateDeviceTaskStatus(ctx context.Context, taskID int64, deviceID string, organisationID int64, status string, completedAt string, statusMessage string) error {
 	outcome, err := s.ApplyDeviceTaskReport(ctx, taskID, deviceID, organisationID, status, completedAt, statusMessage)
 	if err != nil {
@@ -285,6 +301,9 @@ func (s *Store) UpdateDeviceTaskStatus(ctx context.Context, taskID int64, device
 	return nil
 }
 
+// ApplyDeviceTaskReport atomically applies an allowed device-reported state
+// transition. Successful and failed reports become terminal; stale or
+// server-owned transitions are ignored. Changed tasks notify subscribers.
 func (s *Store) ApplyDeviceTaskReport(ctx context.Context, taskID int64, deviceID string, organisationID int64, status string, completedAt string, statusMessage string) (TaskTransitionOutcome, error) {
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -333,6 +352,8 @@ func (s *Store) ApplyDeviceTaskReport(ctx context.Context, taskID int64, deviceI
 	return TaskTransitionChanged, nil
 }
 
+// CancelDeviceTask moves a scoped non-terminal task to canceled and notifies its
+// subscribers. A missing or already terminal task returns TaskTransitionNotFound.
 func (s *Store) CancelDeviceTask(ctx context.Context, taskID int64, deviceID string, organisationID int64, completedAt time.Time, message string) (TaskTransitionOutcome, error) {
 	if completedAt.IsZero() {
 		completedAt = time.Now().UTC()
@@ -375,6 +396,8 @@ func (s *Store) CancelDeviceTask(ctx context.Context, taskID int64, deviceID str
 	return TaskTransitionChanged, nil
 }
 
+// ExpireOverdueDeviceTasks marks all non-terminal tasks whose deadlines are at
+// or before now as expired and returns the number changed.
 func (s *Store) ExpireOverdueDeviceTasks(ctx context.Context, now time.Time) (int64, error) {
 	query := `
 		UPDATE device_tasks
@@ -400,6 +423,9 @@ func (s *Store) ExpireOverdueDeviceTasks(ctx context.Context, now time.Time) (in
 	return result.RowsAffected()
 }
 
+// PromoteQueuedDeviceTasks atomically promotes at most the oldest eligible task
+// per idle device to pending, notifies subscribers, and returns tasks ready for
+// publication.
 func (s *Store) PromoteQueuedDeviceTasks(ctx context.Context, now time.Time) ([]PromotedTask, error) {
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {

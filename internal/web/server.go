@@ -45,6 +45,7 @@ type contextKey string
 const userContextKey contextKey = "user"
 const apiCredentialContextKey contextKey = "api_credential"
 
+// Server owns the dependencies and configuration used by Anchor's HTTP handlers.
 type Server struct {
 	store                  *db.Store
 	templates              *template.Template
@@ -56,6 +57,9 @@ type Server struct {
 	fotaDownloadBaseURL    string
 }
 
+// ServerConfig supplies the optional integrations and storage settings used by
+// NewServer. Zero-valued optional dependencies disable their related runtime
+// behavior.
 type ServerConfig struct {
 	InternalMQTTClientAuth InternalMQTTClientAuthConfig
 	MQTTIntegrationRuntime MQTTIntegrationRuntime
@@ -73,6 +77,7 @@ type InternalMQTTClientAuthConfig struct {
 	Password string
 }
 
+// DeviceTaskPublisher sends newly created and pending tasks to devices.
 type DeviceTaskPublisher interface {
 	PublishDeviceTask(ctx context.Context, task domain.DeviceTask, organisationID int64) error
 	PublishPendingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) error
@@ -86,6 +91,7 @@ type MQTTIntegrationRuntime interface {
 	MQTTIntegrationStatus() domain.MQTTIntegrationStatus
 }
 
+// CVEScanWorker wakes the asynchronous CVE scan processor after work is queued.
 type CVEScanWorker interface {
 	Notify()
 }
@@ -495,6 +501,9 @@ type mqttACLRequest struct {
 	Access   any    `json:"acc"`
 }
 
+// NewServer constructs Anchor's HTTP handler and starts configured background
+// task scheduling and CVE scanning services. If config is omitted, optional
+// integrations remain disabled and default storage settings are used.
 func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	var config ServerConfig
 	if len(configs) > 0 {
@@ -624,7 +633,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/devices", http.StatusSeeOther)
 		return
 	}
-	s.render(w, "login.html", loginPageData{})
+	if err := s.render(w, http.StatusOK, loginPageData{}, "login.html"); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
@@ -638,10 +649,12 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.FindUserByEmail(r.Context(), email)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
-		s.render(w, "login.html", loginPageData{
+		if err := s.render(w, http.StatusOK, loginPageData{
 			Error: "Invalid email or password.",
 			Email: email,
-		})
+		}, "login.html"); err != nil {
+			http.Error(w, "template error", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -1173,12 +1186,12 @@ func (s *Server) deviceTaskCancelPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.processTaskQueue(r.Context())
 
-	if r.Header.Get("HX-Request") == "true" {
+	if isHTMXRequest(r) {
 		s.renderDeviceTasksForDevice(w, r, deviceID, organisationID)
 		return
 	}
 
-	http.Redirect(w, r, "/devices/"+deviceID+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+	redirect(w, r, "/devices/"+deviceID+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
 
 func (s *Server) renderDeviceTaskNewWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, deviceID string, organisationID int64, message string) {
@@ -2933,127 +2946,109 @@ func (s *Server) renderDeviceModelDetailForOrganisationWithError(w http.Response
 }
 
 func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, data devicesPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "devices.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "devices.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceNew(w http.ResponseWriter, data deviceCreatePageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_new.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_new.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceDetail(w http.ResponseWriter, data deviceDetailPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_detail.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_detail.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceTelemetry(w http.ResponseWriter, data deviceDetailPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_telemetry", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_telemetry"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceTasks(w http.ResponseWriter, data deviceDetailPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_tasks", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_tasks"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceTaskNew(w http.ResponseWriter, data deviceTaskLaunchPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_task_new.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_task_new.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderCampaignNew(w http.ResponseWriter, data campaignSelectionPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "campaign_new.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "campaign_new.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderCampaigns(w http.ResponseWriter, data campaignsPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "campaigns.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "campaigns.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderCampaignDetail(w http.ResponseWriter, data campaignDetailPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "campaign_detail.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "campaign_detail.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderReleases(w http.ResponseWriter, data releasesPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "releases.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "releases.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderReleaseNew(w http.ResponseWriter, data releaseCreatePageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "release_new.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "release_new.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderReleaseDetail(w http.ResponseWriter, data releaseDetailPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "release_detail.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "release_detail.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderReleaseCVEState(w http.ResponseWriter, data releaseDetailPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "release_cve_state", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "release_cve_state"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceModels(w http.ResponseWriter, data deviceModelsPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_models.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_models.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceModelNew(w http.ResponseWriter, data deviceModelCreatePageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_model_new.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_model_new.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderDeviceModelDetail(w http.ResponseWriter, data deviceModelDetailPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "device_model_detail.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "device_model_detail.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderOrganisation(w http.ResponseWriter, data organisationPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "organisations.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "organisations.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) renderInvitationSignup(w http.ResponseWriter, data invitationSignupPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "invitation_signup.html", data); err != nil {
+	if err := s.render(w, http.StatusOK, data, "invitation_signup.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
@@ -4238,14 +4233,14 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil || cookie.Value == "" {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 
 		user, err := s.store.UserBySession(r.Context(), cookie.Value, time.Now())
 		if errors.Is(err, db.ErrNotFound) {
 			http.SetCookie(w, expiredSessionCookie())
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 		if err != nil {
@@ -4275,13 +4270,6 @@ func (s *Server) userFromRequest(r *http.Request) (domain.User, bool) {
 
 	user, err := s.store.UserBySession(r.Context(), cookie.Value, time.Now())
 	return user, err == nil
-}
-
-func (s *Server) render(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
-		http.Error(w, "template error", http.StatusInternalServerError)
-	}
 }
 
 func sessionCookie(token string, expiresAt time.Time) *http.Cookie {

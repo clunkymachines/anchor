@@ -58,14 +58,22 @@ func (n *deviceEventNotifier) publish(deviceID string) {
 	}
 }
 
+// SubscribeDeviceEvents returns a coalescing signal channel for new events from
+// deviceID and an unsubscribe function. Canceling ctx also unsubscribes; callers
+// must reload persisted state after each signal because signals carry no data.
 func (s *Store) SubscribeDeviceEvents(ctx context.Context, deviceID string) (<-chan struct{}, func()) {
 	return s.events.subscribe(ctx, deviceID)
 }
 
+// SubscribeDeviceTasks returns a coalescing signal channel for task changes on
+// deviceID and an unsubscribe function. Canceling ctx also unsubscribes.
 func (s *Store) SubscribeDeviceTasks(ctx context.Context, deviceID string) (<-chan struct{}, func()) {
 	return s.tasks.subscribe(ctx, deviceID)
 }
 
+// SubscribeReleaseCVEScans returns a coalescing signal channel for CVE scan
+// changes on one release and an unsubscribe function. Canceling ctx also
+// unsubscribes.
 func (s *Store) SubscribeReleaseCVEScans(ctx context.Context, organisationID int64, releaseID int64) (<-chan struct{}, func()) {
 	if s.scans == nil {
 		s.scans = newDeviceEventNotifier()

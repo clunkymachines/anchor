@@ -302,6 +302,7 @@ type CampaignTaskRow struct {
 	DeviceModelName string
 }
 
+// TaskStatusCounts contains campaign task totals grouped by lifecycle state.
 type TaskStatusCounts struct {
 	Queued     int
 	Pending    int
@@ -312,6 +313,7 @@ type TaskStatusCounts struct {
 	Canceled   int
 }
 
+// Total returns the number of tasks across all lifecycle states.
 func (c TaskStatusCounts) Total() int {
 	return c.Queued + c.Pending + c.InProgress + c.Success + c.Failure + c.Expired + c.Canceled
 }

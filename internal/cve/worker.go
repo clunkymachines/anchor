@@ -19,10 +19,12 @@ import (
 )
 
 const (
+	// DefaultScannerPath is the executable name used when no scanner path is configured.
 	DefaultScannerPath = "grype"
 	staleRunningError  = "scan interrupted by process restart"
 )
 
+// Store contains the persistence operations required by Worker.
 type Store interface {
 	ListPendingCVEScanRuns(ctx context.Context) ([]domain.CVEScanRun, error)
 	MarkRunningCVEScansFailed(ctx context.Context, finishedAt string, errorMessage string) (int64, error)
@@ -32,10 +34,12 @@ type Store interface {
 	SoftwareRelease(ctx context.Context, releaseID int64, organisationID int64) (domain.SoftwareRelease, error)
 }
 
+// Scanner scans one SPDX file and returns vulnerability results as Grype JSON.
 type Scanner interface {
 	ScanSPDX(ctx context.Context, path string) ([]byte, error)
 }
 
+// Worker drains queued CVE scans and persists their results.
 type Worker struct {
 	store             Store
 	scanner           Scanner
@@ -45,6 +49,9 @@ type Worker struct {
 	notify            chan struct{}
 }
 
+// Config supplies Worker dependencies. Scanner, Logger, and Now receive
+// production defaults when omitted; Store is required. ReleaseStorageDir is the
+// root used to resolve stored release and SBOM paths.
 type Config struct {
 	Store             Store
 	Scanner           Scanner
@@ -54,6 +61,8 @@ type Config struct {
 	Now               func() time.Time
 }
 
+// NewWorker constructs a stopped Worker. Call Start to recover interrupted work
+// and begin asynchronous queue processing.
 func NewWorker(config Config) *Worker {
 	scanner := config.Scanner
 	if scanner == nil {
@@ -82,6 +91,9 @@ func NewWorker(config Config) *Worker {
 	}
 }
 
+// Start marks scans interrupted by an earlier process as failed, starts the
+// processing loop, and schedules an initial queue check. The loop stops when ctx
+// is canceled.
 func (w *Worker) Start(ctx context.Context) error {
 	if w.store == nil {
 		return errors.New("cve worker store is required")
@@ -98,6 +110,8 @@ func (w *Worker) Start(ctx context.Context) error {
 	return nil
 }
 
+// Notify schedules a queue check without blocking. Multiple notifications may
+// be coalesced while a check is already pending.
 func (w *Worker) Notify() {
 	select {
 	case w.notify <- struct{}{}:
@@ -105,6 +119,9 @@ func (w *Worker) Notify() {
 	}
 }
 
+// ProcessPending drains queued scans until none remain. Failures for individual
+// scans are logged and do not prevent later scans from being attempted; errors
+// reading the queue are returned.
 func (w *Worker) ProcessPending(ctx context.Context) error {
 	for {
 		runs, err := w.store.ListPendingCVEScanRuns(ctx)
@@ -204,10 +221,13 @@ func (w *Worker) releaseSBOMFiles(artifactPath string) ([]string, error) {
 	return files, nil
 }
 
+// ExternalScanner invokes a Grype executable to scan SPDX files.
 type ExternalScanner struct {
 	Path string
 }
 
+// ScanSPDX scans path with Grype and returns its JSON output. If Grype rejects
+// external SPDX document references, it retries with a temporary sanitized copy.
 func (s ExternalScanner) ScanSPDX(ctx context.Context, path string) ([]byte, error) {
 	output, message, err := s.runGrype(ctx, path)
 	if err == nil {

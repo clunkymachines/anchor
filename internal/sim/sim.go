@@ -29,17 +29,27 @@ import (
 )
 
 const (
-	DefaultFleetSize          = 1000
-	DefaultTelemetryInterval  = 60 * time.Second
-	DefaultDevicePrefix       = "sim-"
-	DefaultUsernamePrefix     = "sim-"
-	DefaultFirmwareVersion    = "sim-1.0.0"
-	DefaultLogInterval        = 30 * time.Second
+	// DefaultFleetSize is the number of devices generated when FleetSize is zero.
+	DefaultFleetSize = 1000
+	// DefaultTelemetryInterval is the publish interval used when none is configured.
+	DefaultTelemetryInterval = 60 * time.Second
+	// DefaultDevicePrefix prefixes generated device IDs.
+	DefaultDevicePrefix = "sim-"
+	// DefaultUsernamePrefix prefixes generated MQTT usernames.
+	DefaultUsernamePrefix = "sim-"
+	// DefaultFirmwareVersion is reported by generated devices.
+	DefaultFirmwareVersion = "sim-1.0.0"
+	// DefaultLogInterval controls periodic simulator metric logging.
+	DefaultLogInterval = 30 * time.Second
+	// DefaultProvisionTimeout bounds fleet provisioning requests.
 	DefaultProvisionTimeout   = 10 * time.Minute
 	defaultConnectTimeout     = 15 * time.Second
 	defaultConnectConcurrency = 25
 )
 
+// Config describes the Anchor API, MQTT broker, fleet identity, and pacing used
+// by a simulator runtime. NormalizeConfig fills optional zero values and
+// Validate checks required connection and fleet settings.
 type Config struct {
 	AnchorBaseURL      string
 	APIToken           string
@@ -60,6 +70,8 @@ type Config struct {
 	Logger             *slog.Logger
 }
 
+// DeviceDefinition contains the stable identity, credentials, and MQTT topics
+// assigned to one simulated device.
 type DeviceDefinition struct {
 	ID             string
 	MQTTUsername   string
@@ -71,6 +83,7 @@ type DeviceDefinition struct {
 	OrganisationID int64
 }
 
+// Metrics contains concurrency-safe counters accumulated by a running fleet.
 type Metrics struct {
 	Provisioned         atomic.Int64
 	Connected           atomic.Int64
@@ -112,6 +125,7 @@ type provisioningResult struct {
 	} `json:"error"`
 }
 
+// Runtime owns a normalized simulated fleet and its live MQTT connections.
 type Runtime struct {
 	cfg     Config
 	devices []*deviceRuntime
@@ -135,6 +149,8 @@ type taskEnvelope struct {
 	Parameters map[string]any `cbor:"parameters"`
 }
 
+// NormalizeConfig returns cfg with defaults applied to optional zero-valued
+// settings. Explicit non-zero values are preserved.
 func NormalizeConfig(cfg Config) Config {
 	if cfg.FleetSize == 0 {
 		cfg.FleetSize = DefaultFleetSize
@@ -169,6 +185,8 @@ func NormalizeConfig(cfg Config) Config {
 	return cfg
 }
 
+// Validate reports whether cfg contains the required endpoints, credentials,
+// model, and supported fleet sizing values.
 func (cfg Config) Validate() error {
 	if strings.TrimSpace(cfg.AnchorBaseURL) == "" {
 		return errors.New("anchor base URL is required")
@@ -197,6 +215,8 @@ func (cfg Config) Validate() error {
 	return nil
 }
 
+// GenerateFleet deterministically derives cfg.FleetSize device identities and
+// credentials after applying configuration defaults.
 func GenerateFleet(cfg Config) []DeviceDefinition {
 	cfg = NormalizeConfig(cfg)
 	devices := make([]DeviceDefinition, 0, cfg.FleetSize)
@@ -214,12 +234,15 @@ func GenerateFleet(cfg Config) []DeviceDefinition {
 	return devices
 }
 
+// DeterministicPassword derives a stable per-device password using HMAC-SHA256.
 func DeterministicPassword(secret string, deviceID string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(deviceID))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// NewRuntime normalizes and validates cfg, then constructs a stopped simulated
+// fleet. Call Run to provision and connect its devices.
 func NewRuntime(cfg Config) (*Runtime, error) {
 	cfg = NormalizeConfig(cfg)
 	if err := cfg.Validate(); err != nil {
@@ -242,6 +265,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	return runtime, nil
 }
 
+// Run provisions the fleet, connects its devices to MQTT, and blocks until ctx
+// is canceled. It disconnects all devices before returning ctx.Err.
 func (r *Runtime) Run(ctx context.Context) error {
 	if err := r.provision(ctx); err != nil {
 		return err
@@ -645,6 +670,8 @@ func (d *deviceRuntime) valueForPath(path string) (any, bool) {
 	return value, ok
 }
 
+// TelemetryCBOR encodes the simulator's standard telemetry payload, overlaying
+// writable values addressed by dotted property paths.
 func TelemetryCBOR(device DeviceDefinition, sequence uint64, writable map[string]any) ([]byte, error) {
 	payload := map[string]any{
 		"firmware":       device.Firmware,
@@ -747,6 +774,7 @@ func organisationIDFromDataTopic(topic string) int64 {
 	return id
 }
 
+// SupportedWritePaths returns the writable simulator property paths in sorted order.
 func SupportedWritePaths() []string {
 	state := defaultWritableState()
 	paths := make([]string, 0, len(state))
