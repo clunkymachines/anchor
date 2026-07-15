@@ -121,6 +121,14 @@
 				<span class="nav-label">Integrations</span>
 			</a>
 		{{end}}
+		<a
+			class="nav-item {{if eq .Active "settings"}}is-active{{end}}"
+			{{if eq .Active "settings"}}aria-current="page"{{end}}
+			href="/settings?organisation_id={{.Shell.SelectedOrganisationID}}"
+		>
+			<span class="nav-icon" aria-hidden="true">{{template "icon_user" .}}</span>
+			<span class="nav-label">User settings</span>
+		</a>
 	</nav>
 </aside>
 {{end}}
@@ -144,13 +152,13 @@
 		<form method="post" action="/logout">
 			<button class="button button-ghost" type="submit">Sign out</button>
 		</form>
-		<div class="user-menu" aria-label="Current user">
+		<a class="user-menu" href="/settings?organisation_id={{.Shell.SelectedOrganisationID}}" aria-label="User settings">
 			<div class="user-avatar"></div>
 			<div>
 				<span class="user-name">{{.Shell.User.Name}}</span>
 				<span class="user-email">{{.Shell.User.Email}}</span>
 			</div>
-		</div>
+		</a>
 	</div>
 </header>
 {{end}}
@@ -298,5 +306,12 @@
 	<path d="M9 8V2"></path>
 	<path d="M15 8V2"></path>
 	<path d="M18 8v4a6 6 0 0 1-12 0V8Z"></path>
+</svg>
+{{end}}
+
+{{define "icon_user"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<circle cx="12" cy="8" r="4"></circle>
+	<path d="M4 21a8 8 0 0 1 16 0"></path>
 </svg>
 {{end}}

@@ -1,0 +1,88 @@
+{{template "app_page_start" (dict "Title" "User settings - Anchor" "Shell" .Shell "Active" "settings" "OrganisationAction" "/settings" "SearchPlaceholder" "Search" "DeviceBadge" "" "ReleaseBadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">User settings</h1>
+							<p class="page-subtitle">Manage your account and sign-in credentials.</p>
+						</div>
+					</header>
+
+					<section class="grid grid-cols-2 organisation-settings-grid">
+						<form class="device-create-form" method="post" action="/settings/profile">
+							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+							<section class="card form-card">
+								<header class="card-header">
+									<div>
+										<h2 class="card-title">Profile</h2>
+										<p class="card-subtitle">Display name and login email</p>
+									</div>
+								</header>
+								<div class="card-body">
+									{{if .ProfileError}}<p class="form-error">{{.ProfileError}}</p>{{end}}
+									{{if .ProfileMessage}}<p class="form-success">{{.ProfileMessage}}</p>{{end}}
+									<label class="field">
+										<span class="field-label">Display name</span>
+										<input class="input" name="name" autocomplete="name" value="{{.ProfileName}}" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Email</span>
+										<input class="input" name="email" type="email" autocomplete="email" value="{{.ProfileEmail}}" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Current password</span>
+										<span class="password-input">
+											<input class="input" name="current_password" type="password" autocomplete="current-password" required>
+											{{template "password_toggle" .}}
+										</span>
+										<span class="field-help">Required to confirm changes to your identity.</span>
+									</label>
+									<div class="form-actions">
+										<button class="button button-primary" type="submit">Save profile</button>
+									</div>
+								</div>
+							</section>
+						</form>
+
+						<form class="device-create-form" method="post" action="/settings/password">
+							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+							<section class="card form-card">
+								<header class="card-header">
+									<div>
+										<h2 class="card-title">Password</h2>
+										<p class="card-subtitle">Update your sign-in password</p>
+									</div>
+								</header>
+								<div class="card-body">
+									{{if .PasswordError}}<p class="form-error">{{.PasswordError}}</p>{{end}}
+									{{if .PasswordMessage}}<p class="form-success">{{.PasswordMessage}}</p>{{end}}
+									<label class="field">
+										<span class="field-label">Current password</span>
+										<span class="password-input">
+											<input class="input" name="current_password" type="password" autocomplete="current-password" required>
+											{{template "password_toggle" .}}
+										</span>
+									</label>
+									<label class="field">
+										<span class="field-label">New password</span>
+										<span class="password-input">
+											<input class="input" name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required>
+											{{template "password_toggle" .}}
+										</span>
+										<span class="field-help">Use between 8 and 72 characters.</span>
+									</label>
+									<label class="field">
+										<span class="field-label">Confirm new password</span>
+										<span class="password-input">
+											<input class="input" name="confirm_password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required>
+											{{template "password_toggle" .}}
+										</span>
+									</label>
+									<div class="form-actions">
+										<button class="button button-primary" type="submit">Change password</button>
+									</div>
+								</div>
+							</section>
+						</form>
+					</section>
+				</main>
+{{template "app_page_end" .}}

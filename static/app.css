@@ -508,6 +508,12 @@ a {
   gap: 10px;
   min-height: 44px;
   color: var(--text-primary);
+  border-radius: 10px;
+  text-decoration: none;
+}
+
+.user-menu:hover {
+  color: var(--action-primary);
 }
 
 .user-avatar {
