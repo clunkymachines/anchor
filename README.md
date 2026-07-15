@@ -1,102 +1,147 @@
-Anchor is a device management server build in Go.
+# Anchor
 
-It offers capabilities to manage fleet of connected devices. Devices can be connected over various protocol frontend or thru gateway using the server API.
+<p align="center">
+  <img src="logo.png" alt="Anchor by Clunky Machines" width="120">
+</p>
 
-the server expose a web UI (HTMX) for human and a REST API for backend integration.
+Anchor is a web application for managing connected-device fleets. It brings device inventory, telemetry, remote tasks, firmware releases, campaigns, and software vulnerability tracking into one place.
 
-## MQTT broker authentication
+Anchor is early-stage software. Database schemas may change between versions; during development, delete and recreate local databases when the fresh schema changes.
 
-Anchor can act as the source of truth for Mosquitto device authentication and topic authorization checks through the `mosquitto-go-auth` HTTP backend.
+## What You Can Do
 
-Configure device MQTT credentials from the Devices page. Each configured device has:
+- Organise devices by organisation and device model.
+- Monitor device connectivity, reported software versions, telemetry, and raw events.
+- Send read, write, and firmware-update tasks to individual devices.
+- Run tasks across selected devices as campaigns and track their results.
+- Store firmware releases and associate an expected release with each device model.
+- Upload SPDX SBOMs and review CVEs detected in firmware releases.
+- Provision devices through organisation-scoped API credentials.
+- Connect MQTT devices through Mosquitto, including gateway devices.
 
-- an MQTT username and password;
-- a fixed data publish topic: `dev/{orgID}/{deviceID}/data`;
-- a fixed task receive topic: `dev/{orgID}/{deviceID}/task`;
-- optional gateway mode, which allows publishing data for other devices in the same organisation.
+## Quick Start
 
-Anchor exposes these broker-facing endpoints:
+### Requirements
 
-- `POST /mqtt/auth`: username/password check;
-- `POST /mqtt/superuser`: always denies superuser access;
-- `POST /mqtt/acl`: topic authorization check.
+- Go 1.24 or newer
+- SQLite, included and used by default
 
-Example `mosquitto-go-auth` configuration:
+Mosquitto is only required when connecting MQTT devices. Grype is only required when scanning release SBOMs for CVEs.
 
-```conf
-auth_plugin /etc/mosquitto/conf.d/go-auth.so
-auth_opt_backends http
-auth_opt_http_host 127.0.0.1
-auth_opt_http_port 8080
-auth_opt_http_getuser_uri /mqtt/auth
-auth_opt_http_superuser_uri /mqtt/superuser
-auth_opt_http_aclcheck_uri /mqtt/acl
-auth_opt_http_response_mode status
-auth_opt_http_params_mode json
-auth_opt_http_method POST
-```
+### Start Anchor
 
-The HTTP backend also supports form params; Anchor accepts both JSON and form requests.
-
-## MQTT client
-
-Anchor can also connect to a MQTT 5 broker as an internal client. It consumes telemetry publishes to materialize the device twin and publishes device tasks on task topics.
-
-Anchor admins configure and activate the internal client from **Integrations > MQTT with Mosquitto**. The saved settings include the broker URL, client ID, username, password, and QoS. Changes take effect without restarting Anchor.
-
-`ANCHOR_FOTA_DOWNLOAD_BASE_URL` remains an optional application setting used in FOTA task download URLs, such as `https://anchor.example.com`. When unset, FOTA tasks use a relative `/org/{orgID}/releases/{releaseID}/binary` path.
-
-Ingestion uses MQTT 5 content type metadata. If the content type contains `json` or `cbor`, Anchor decodes that format. If no content type is provided, Anchor tries CBOR first, then JSON. Decoded object payloads are flattened into twin property paths.
-
-When a decoded top-level `firmware` telemetry value is a string, Anchor trims surrounding whitespace and stores it as `devices.software_versions["firmware"]`. Non-string `firmware` values remain telemetry only. This reported firmware version is used to match devices to model-scoped firmware releases for CVE status.
-
-When the broker uses Anchor's `/mqtt/auth` and `/mqtt/acl` endpoints, the configured internal client may subscribe to `dev/+/+/data`, receive matching telemetry topics, and publish task messages to `dev/{orgID}/{deviceID}/task`. It is not allowed to publish device data or become a superuser.
-
-## Fleet simulator
-
-Organisation admins can create API credentials from the Organisations page. The token is shown once and can be used for provisioning through:
+From the repository root, set a password for the initial Anchor administrator and run the server:
 
 ```sh
-POST /api/v1/devices/bulk-upsert
-Authorization: Bearer anc_org_...
-Content-Type: application/json
+ANCHOR_ADMIN_PASSWORD='choose-a-password' go run .
 ```
 
-The fleet simulator provisions devices with that API token, then connects one MQTT client per simulated device using deterministic per-device MQTT passwords. It publishes CBOR telemetry only and runs until interrupted.
+Open [http://localhost:8080](http://localhost:8080) and sign in with:
 
-Example local run:
+- Email: `admin@anchor.local`
+- Password: the value supplied in `ANCHOR_ADMIN_PASSWORD`
 
-```sh
-go run ./cmd/fleet-sim \
-  -anchor-url http://localhost:8080 \
-  -api-token "$ANCHOR_SIM_API_TOKEN" \
-  -mqtt-url mqtt://localhost:1883 \
-  -model-id 1 \
-  -fleet-size 10 \
-  -secret local-simulator-secret
-```
+Anchor creates `anchor.db`, the administrator account, and a personal organisation on the first run. Bootstrap account settings only apply when creating the first user, so set them before starting with a new database.
 
-Scale `-fleet-size` up to `1000` once Anchor and the broker are running with the HTTP auth callbacks above. If the fresh schema changed, delete and recreate the local database before the run.
+For a disposable local start, the default password is `anchor`. Do not use that default outside local development.
 
-## CVE scanning
+## Connect Your First Device
 
-Firmware releases can include optional `.spdx` SBOM files. Anchor stores those files with the release artifacts and scans them asynchronously for CVEs when an SBOM is present or manually rescanned from the release detail page.
+1. Open **Device models** and create a model with its expected heartbeat interval and protocol.
+2. If the device uses MQTT, configure Mosquitto to use Anchor for authentication and ACL checks. See [MQTT setup](MQTT.md#mosquitto-setup).
+3. As an Anchor administrator, open **Integrations**, configure **MQTT with Mosquitto**, and activate it.
+4. Confirm that **Broker connection** reports **Connected**. If it does not, Anchor displays the latest connection reason.
+5. Open **Devices**, create a device, choose the model, and set its MQTT username and password.
+6. Configure the device with the displayed data and task topics, then connect it to Mosquitto.
+7. Open the device in Anchor to inspect telemetry, raw events, current twin values, software versions, and tasks.
 
-Anchor invokes the external Grype CLI instead of embedding scanner code. Install `grype` on the server `PATH`, or set `ANCHOR_GRYPE_PATH` to the scanner binary path. If Grype is missing or exits with an error, Anchor records the scan run as failed and leaves manual rescan available.
+The MQTT payload and topic contract is documented in [MQTT.md](MQTT.md).
 
-Scan results are scoped to the current SBOM set for a release. Replacing the SBOM removes the old SPDX files, clears prior scan runs and findings for that release, and enqueues a new scan.
+## Core Workflows
 
-## Logging
+### Devices and Telemetry
 
-Use Go's `log/slog` package for application logs.
+The **Devices** page shows fleet connectivity, model, software, CVE, and communication status. A device detail page combines:
 
-- `Info`: one-time lifecycle messages that do not recur during normal operation, such as `app started`.
-- `Debug`: recurring operational messages. Debug logs should stay quiet by default.
-- `Warn`: recoverable problems that may need attention but do not require immediate intervention, such as malformed JSON.
-- `Error`: serious problems that require immediate human intervention, such as database corruption, crashes, or application bugs.
+- current materialised telemetry values;
+- recent raw device events;
+- reported software versions;
+- communication credentials and topics;
+- active and recent tasks.
+
+Device connectivity is calculated from the heartbeat interval configured on its model.
+
+### Tasks and Campaigns
+
+Use a device detail page to launch a task for one device:
+
+- **Read** requests one or more telemetry paths.
+- **Write** sends typed values to device paths.
+- **FOTA** asks a device to install a firmware release.
+
+Select devices from the inventory and choose **Create campaign** to launch the same task across a group. Anchor tracks queued, pending, in-progress, successful, failed, expired, and canceled work.
+
+### Firmware Releases and CVEs
+
+Create a release for a device model by uploading its firmware binary and, optionally, SPDX SBOM files. Anchor can:
+
+- deliver the release through FOTA tasks;
+- compare a device's reported firmware version with the model's expected release;
+- scan the SBOM with Grype;
+- group active CVEs by severity;
+- record CVEs marked as not relevant.
+
+Install `grype` on the server `PATH`, or configure `ANCHOR_GRYPE_PATH`, to enable scanning. A missing or failed scanner is reported in the release scan history and can be retried from the release page.
+
+### Organisations and Access
+
+Every user belongs to at least one organisation. Use the organisation picker to switch the fleet currently being managed.
+
+- **Anchor administrators** can access every organisation and configure application-wide integrations.
+- **Organisation administrators** can rename their organisation, invite or remove members, and manage API credentials.
+- **Organisation members** can work with resources in organisations they belong to.
+
+Invitation links let new users set their display name and password before joining an organisation.
+
+## Configuration
+
+Anchor reads application and bootstrap settings from environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ANCHOR_HTTP_ADDR` | `:8080` | HTTP listen address |
+| `ANCHOR_DB_DIALECT` | `sqlite` | `sqlite`, `postgres`, or `postgresql` |
+| `ANCHOR_DB_PATH` | `anchor.db` | SQLite database path |
+| `ANCHOR_DB_DSN` | none | Database DSN; required for PostgreSQL |
+| `ANCHOR_ADMIN_EMAIL` | `admin@anchor.local` | Bootstrap administrator email |
+| `ANCHOR_ADMIN_NAME` | `Anchor Admin` | Bootstrap administrator display name |
+| `ANCHOR_ADMIN_PASSWORD` | `anchor` | Bootstrap administrator password |
+| `ANCHOR_FOTA_DOWNLOAD_BASE_URL` | relative URLs | Public URL prefix used in FOTA download links |
+| `ANCHOR_GRYPE_PATH` | `grype` from `PATH` | Grype executable used for CVE scans |
+
+MQTT connection settings are stored in Anchor and managed from **Integrations**, not through environment variables.
+
+SQLite is the tested database path. A PostgreSQL schema and PostgreSQL-specific queries are implemented, but there is currently no automated PostgreSQL integration suite. Treat PostgreSQL support as experimental.
+
+## MQTT Connection Status
+
+The **Integrations** page reports the internal MQTT client's live broker state:
+
+- **Disabled**: the integration is inactive.
+- **Connecting**: Anchor is waiting for the broker connection.
+- **Connected**: the broker connection is established.
+- **Reconnecting**: an established connection was lost and Anchor is retrying.
+- **Connection failed**: the latest connection attempt failed; the broker error is shown on the page.
+
+The status refreshes automatically. Common causes of failure include an unreachable broker URL, rejected internal-client credentials, and Mosquitto listener or TLS configuration errors.
+
+## Further Documentation
+
+- [MQTT protocol and Mosquitto setup](MQTT.md)
+- [Fleet simulator](SIMULATOR.md)
+- [Contributing](CONTRIBUTING.md)
+- [License](LICENSE)
 
 ## License
 
-Anchor is licensed under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
-
-Contributions require a signed [Contributor Copyright Assignment Agreement](CLA.md). See [CONTRIBUTING.md](CONTRIBUTING.md).
+Anchor is licensed under the GNU Affero General Public License v3.0. Contributions require a signed [Contributor Copyright Assignment Agreement](CLA.md).
