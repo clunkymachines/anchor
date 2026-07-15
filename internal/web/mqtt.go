@@ -117,15 +117,25 @@ func (s *Server) mqttTopicAllowed(ctx context.Context, username string, action s
 }
 
 func (s *Server) internalMQTTClientAuthenticated(username string, password string) bool {
-	if !s.internalMQTTClientConfiguredFor(username) || s.internalMQTTClientAuth.Password == "" {
+	configuredUsername, configuredPassword, enabled := s.internalMQTTClientCredentials()
+	if !enabled || configuredUsername == "" || username != configuredUsername || configuredPassword == "" {
 		return false
 	}
 
-	return subtle.ConstantTimeCompare([]byte(password), []byte(s.internalMQTTClientAuth.Password)) == 1
+	return subtle.ConstantTimeCompare([]byte(password), []byte(configuredPassword)) == 1
 }
 
 func (s *Server) internalMQTTClientConfiguredFor(username string) bool {
-	return s.internalMQTTClientAuth.Username != "" && username == s.internalMQTTClientAuth.Username
+	configuredUsername, _, enabled := s.internalMQTTClientCredentials()
+	return enabled && configuredUsername != "" && username == configuredUsername
+}
+
+func (s *Server) internalMQTTClientCredentials() (string, string, bool) {
+	if s.mqttIntegrationRuntime != nil {
+		return s.mqttIntegrationRuntime.InternalMQTTCredentials()
+	}
+	configured := s.internalMQTTClientAuth.Username != ""
+	return s.internalMQTTClientAuth.Username, s.internalMQTTClientAuth.Password, configured
 }
 
 func (s *Server) internalMQTTClientTopicAllowed(action string, topic string) bool {

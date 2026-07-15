@@ -111,6 +111,16 @@
 			<span class="nav-icon" aria-hidden="true">{{template "icon_building_2" .}}</span>
 			<span class="nav-label">Organisations</span>
 		</a>
+		{{if .Shell.User.IsAdmin}}
+			<a
+				class="nav-item {{if eq .Active "integrations"}}is-active{{end}}"
+				{{if eq .Active "integrations"}}aria-current="page"{{end}}
+				href="/integrations?organisation_id={{.Shell.SelectedOrganisationID}}"
+			>
+				<span class="nav-icon" aria-hidden="true">{{template "icon_plug" .}}</span>
+				<span class="nav-label">Integrations</span>
+			</a>
+		{{end}}
 	</nav>
 </aside>
 {{end}}
@@ -279,5 +289,14 @@
 	<path d="m12.83 2.18 8.58 3.9a1 1 0 0 1 0 1.83l-8.58 3.91a2 2 0 0 1-1.66 0L2.6 7.91a1 1 0 0 1 0-1.83l8.57-3.9a2 2 0 0 1 1.66 0Z"></path>
 	<path d="m22 12.5-9.17 4.18a2 2 0 0 1-1.66 0L2 12.5"></path>
 	<path d="m22 17.5-9.17 4.18a2 2 0 0 1-1.66 0L2 17.5"></path>
+</svg>
+{{end}}
+
+{{define "icon_plug"}}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+	<path d="M12 22v-5"></path>
+	<path d="M9 8V2"></path>
+	<path d="M15 8V2"></path>
+	<path d="M18 8v4a6 6 0 0 1-12 0V8Z"></path>
 </svg>
 {{end}}

@@ -42,14 +42,9 @@ The HTTP backend also supports form params; Anchor accepts both JSON and form re
 
 Anchor can also connect to a MQTT 5 broker as an internal client. It consumes telemetry publishes to materialize the device twin and publishes device tasks on task topics.
 
-Configure the internal client with:
+Anchor admins configure and activate the internal client from **Integrations > MQTT with Mosquitto**. The saved settings include the broker URL, client ID, username, password, and QoS. Changes take effect without restarting Anchor.
 
-- `ANCHOR_MQTT_BROKER_URL`: broker URL, such as `mqtt://127.0.0.1:1883`;
-- `ANCHOR_MQTT_CLIENT_ID`: MQTT client ID, defaults to `anchor-ingest`;
-- `ANCHOR_MQTT_USERNAME`: broker username, defaults to the client ID;
-- `ANCHOR_MQTT_PASSWORD`: broker password, defaults to a random per-process value;
-- `ANCHOR_MQTT_QOS`: subscription and task publish QoS, defaults to `0`.
-- `ANCHOR_FOTA_DOWNLOAD_BASE_URL`: optional public base URL used in FOTA task download URLs, such as `https://anchor.example.com`. When unset, FOTA tasks use a relative `/org/{orgID}/releases/{releaseID}/binary` path.
+`ANCHOR_FOTA_DOWNLOAD_BASE_URL` remains an optional application setting used in FOTA task download URLs, such as `https://anchor.example.com`. When unset, FOTA tasks use a relative `/org/{orgID}/releases/{releaseID}/binary` path.
 
 Ingestion uses MQTT 5 content type metadata. If the content type contains `json` or `cbor`, Anchor decodes that format. If no content type is provided, Anchor tries CBOR first, then JSON. Decoded object payloads are flattened into twin property paths.
 

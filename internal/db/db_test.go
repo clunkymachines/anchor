@@ -74,6 +74,16 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"created_at",
 		"updated_at",
 	})
+	assertColumns(t, store, "mqtt_integration", []string{
+		"id",
+		"enabled",
+		"broker_url",
+		"client_id",
+		"username",
+		"password",
+		"qos",
+		"updated_at",
+	})
 	assertColumns(t, store, "devices", []string{
 		"id",
 		"organisation_id",

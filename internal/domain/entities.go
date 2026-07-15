@@ -82,6 +82,33 @@ type OrganisationAPICredential struct {
 	UpdatedAt string
 }
 
+// MQTTIntegrationConfig contains Anchor's application-level Mosquitto connection settings.
+type MQTTIntegrationConfig struct {
+	Enabled    bool
+	BrokerURL  string
+	ClientID   string
+	Username   string
+	Password   string
+	QoS        byte
+	Configured bool
+	UpdatedAt  string
+}
+
+const (
+	MQTTConnectionDisabled     = "disabled"
+	MQTTConnectionConnecting   = "connecting"
+	MQTTConnectionConnected    = "connected"
+	MQTTConnectionDisconnected = "disconnected"
+	MQTTConnectionFailed       = "failed"
+)
+
+// MQTTIntegrationStatus describes the internal client's current broker connection state.
+type MQTTIntegrationStatus struct {
+	State     string
+	Reason    string
+	UpdatedAt string
+}
+
 type Device struct {
 	// ID is the stable device identifier.
 	ID string

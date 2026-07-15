@@ -228,6 +228,16 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 			);`,
+			`CREATE TABLE IF NOT EXISTS mqtt_integration (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+				broker_url TEXT NOT NULL,
+				client_id TEXT NOT NULL,
+				username TEXT NOT NULL,
+				password TEXT NOT NULL,
+				qos INTEGER NOT NULL DEFAULT 0 CHECK (qos IN (0, 1, 2)),
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
 			`CREATE TABLE IF NOT EXISTS software_releases (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
@@ -470,6 +480,16 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				enabled BOOLEAN NOT NULL DEFAULT TRUE,
 				last_used_at TIMESTAMPTZ,
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);`,
+			`CREATE TABLE IF NOT EXISTS mqtt_integration (
+				id SMALLINT PRIMARY KEY CHECK (id = 1),
+				enabled BOOLEAN NOT NULL DEFAULT FALSE,
+				broker_url TEXT NOT NULL,
+				client_id TEXT NOT NULL,
+				username TEXT NOT NULL,
+				password TEXT NOT NULL,
+				qos SMALLINT NOT NULL DEFAULT 0 CHECK (qos IN (0, 1, 2)),
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);`,
 			`CREATE TABLE IF NOT EXISTS software_releases (

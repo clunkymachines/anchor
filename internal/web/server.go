@@ -49,6 +49,7 @@ type Server struct {
 	store                  *db.Store
 	templates              *template.Template
 	internalMQTTClientAuth InternalMQTTClientAuthConfig
+	mqttIntegrationRuntime MQTTIntegrationRuntime
 	taskPublisher          DeviceTaskPublisher
 	cveScanWorker          CVEScanWorker
 	releaseStorageDir      string
@@ -57,6 +58,7 @@ type Server struct {
 
 type ServerConfig struct {
 	InternalMQTTClientAuth InternalMQTTClientAuthConfig
+	MQTTIntegrationRuntime MQTTIntegrationRuntime
 	TaskPublisher          DeviceTaskPublisher
 	ReleaseStorageDir      string
 	FOTADownloadBaseURL    string
@@ -76,6 +78,14 @@ type DeviceTaskPublisher interface {
 	PublishPendingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) error
 }
 
+// MQTTIntegrationRuntime applies saved MQTT settings and exposes the active internal credentials.
+type MQTTIntegrationRuntime interface {
+	DeviceTaskPublisher
+	ApplyMQTTIntegration(ctx context.Context, config domain.MQTTIntegrationConfig) error
+	InternalMQTTCredentials() (username string, password string, enabled bool)
+	MQTTIntegrationStatus() domain.MQTTIntegrationStatus
+}
+
 type CVEScanWorker interface {
 	Notify()
 }
@@ -89,6 +99,20 @@ type shellPageData struct {
 	User                   domain.User
 	Organisations          []domain.Organisation
 	SelectedOrganisationID int64
+}
+
+type integrationsPageData struct {
+	Shell                     shellPageData
+	MQTT                      domain.MQTTIntegrationConfig
+	MQTTFormError             string
+	MQTTMessage               string
+	MQTTStatus                string
+	MQTTStatusClass           string
+	MQTTConnectionStatus      string
+	MQTTConnectionStatusClass string
+	MQTTConnectionReason      string
+	MQTTConnectionUpdatedAt   string
+	PasswordConfigured        bool
 }
 
 type devicesPageData struct {
@@ -481,10 +505,14 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 		store:                  store,
 		templates:              template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict, "localTime": localTimeElement}).ParseGlob("templates/*.html")),
 		internalMQTTClientAuth: config.InternalMQTTClientAuth,
+		mqttIntegrationRuntime: config.MQTTIntegrationRuntime,
 		taskPublisher:          config.TaskPublisher,
 		cveScanWorker:          config.CVEScanWorker,
 		releaseStorageDir:      config.ReleaseStorageDir,
 		fotaDownloadBaseURL:    strings.TrimRight(strings.TrimSpace(config.FOTADownloadBaseURL), "/"),
+	}
+	if server.taskPublisher == nil && server.mqttIntegrationRuntime != nil {
+		server.taskPublisher = server.mqttIntegrationRuntime
 	}
 	if server.releaseStorageDir == "" {
 		server.releaseStorageDir = defaultReleaseDir
@@ -550,6 +578,9 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /organisations/api-credentials", server.requireAuth(http.HandlerFunc(server.organisationAPICredentialsPost)))
 	mux.Handle("POST /organisations/api-credentials/{credentialID}/disable", server.requireAuth(http.HandlerFunc(server.organisationAPICredentialDisablePost)))
 	mux.Handle("POST /organisations/api-credentials/{credentialID}/rotate", server.requireAuth(http.HandlerFunc(server.organisationAPICredentialRotatePost)))
+	mux.Handle("GET /integrations", server.requireAuth(http.HandlerFunc(server.integrations)))
+	mux.Handle("GET /integrations/mqtt/status", server.requireAuth(http.HandlerFunc(server.mqttIntegrationStatus)))
+	mux.Handle("POST /integrations/mqtt", server.requireAuth(http.HandlerFunc(server.mqttIntegrationPost)))
 	mux.HandleFunc("GET /invitations/{token}", server.invitationSignup)
 	mux.HandleFunc("POST /invitations/{token}", server.invitationSignupPost)
 	mux.Handle("POST /api/v1/devices/bulk-upsert", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceBulkUpsert)))

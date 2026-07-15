@@ -2,13 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	"anchor/internal/db"
@@ -35,27 +31,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	mqttConfig, mqttEnabled, err := mqttConfigFromEnv()
-	if err != nil {
-		slog.Error("mqtt config", "err", err)
-		os.Exit(1)
+	mqttManager := mqtt.NewManager(store, os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"), slog.Default())
+	if err := mqttManager.Start(ctx); err != nil {
+		slog.Error("start mqtt integration", "err", err)
 	}
-	var taskPublisher web.DeviceTaskPublisher
-	if mqttEnabled {
-		mqttClient := mqtt.NewClient(store, mqttConfig, slog.Default())
-		mqttConn, err := mqttClient.Start(ctx)
-		if err != nil {
-			slog.Error("start mqtt client", "err", err)
-			os.Exit(1)
-		}
-		taskPublisher = mqttClient
-		defer mqttConn.Disconnect(context.Background())
-		slog.Info("mqtt client started", "broker", mqttConfig.BrokerURL, "topic", mqtt.DataTopicFilter)
-	}
+	defer mqttManager.Close()
 
 	server := &http.Server{
-		Addr:              envOrDefault("ANCHOR_HTTP_ADDR", defaultHTTPAddr),
-		Handler:           web.NewServer(store, webConfigFromMQTT(mqttConfig, mqttEnabled, taskPublisher)),
+		Addr: envOrDefault("ANCHOR_HTTP_ADDR", defaultHTTPAddr),
+		Handler: web.NewServer(store, web.ServerConfig{
+			FOTADownloadBaseURL:    os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"),
+			CVEScanWorkerEnabled:   true,
+			CVEScannerPath:         os.Getenv("ANCHOR_GRYPE_PATH"),
+			MQTTIntegrationRuntime: mqttManager,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -64,68 +53,6 @@ func main() {
 		slog.Error("server stopped unexpectedly", "err", err)
 		os.Exit(1)
 	}
-}
-
-func webConfigFromMQTT(mqttConfig mqtt.Config, mqttEnabled bool, taskPublisher web.DeviceTaskPublisher) web.ServerConfig {
-	config := web.ServerConfig{
-		FOTADownloadBaseURL:  os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"),
-		CVEScanWorkerEnabled: true,
-		CVEScannerPath:       os.Getenv("ANCHOR_GRYPE_PATH"),
-	}
-	if !mqttEnabled {
-		return config
-	}
-
-	config.TaskPublisher = taskPublisher
-	config.InternalMQTTClientAuth = web.InternalMQTTClientAuthConfig{
-		Username: mqttConfig.Username,
-		Password: mqttConfig.Password,
-	}
-	return config
-}
-
-func mqttConfigFromEnv() (mqtt.Config, bool, error) {
-	brokerURL := os.Getenv("ANCHOR_MQTT_BROKER_URL")
-	if brokerURL == "" {
-		return mqtt.Config{}, false, nil
-	}
-
-	clientID := envOrDefault("ANCHOR_MQTT_CLIENT_ID", "anchor-ingest")
-	username := envOrDefault("ANCHOR_MQTT_USERNAME", clientID)
-	password := os.Getenv("ANCHOR_MQTT_PASSWORD")
-	if password == "" {
-		generatedPassword, err := randomMQTTPassword()
-		if err != nil {
-			return mqtt.Config{}, false, err
-		}
-		password = generatedPassword
-	}
-
-	qos := byte(0)
-	if value := os.Getenv("ANCHOR_MQTT_QOS"); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 0 || parsed > 2 {
-			return mqtt.Config{}, false, fmt.Errorf("ANCHOR_MQTT_QOS must be 0, 1, or 2")
-		}
-		qos = byte(parsed)
-	}
-
-	return mqtt.Config{
-		BrokerURL:           brokerURL,
-		ClientID:            clientID,
-		Username:            username,
-		Password:            password,
-		QoS:                 qos,
-		FOTADownloadBaseURL: os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"),
-	}, true, nil
-}
-
-func randomMQTTPassword() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("generate mqtt password: %w", err)
-	}
-	return hex.EncodeToString(bytes), nil
 }
 
 func dbConfigFromEnv() db.Config {

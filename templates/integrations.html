@@ -1,0 +1,103 @@
+{{template "app_page_start" (dict "Title" "Integrations - Anchor" "Shell" .Shell "Active" "integrations" "OrganisationAction" "/integrations" "SearchPlaceholder" "Search integrations" "DeviceBadge" "" "ReleaseBadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Integrations</h1>
+							<p class="page-subtitle">Application services</p>
+						</div>
+					</header>
+
+					<form class="integration-form" method="post" action="/integrations/mqtt">
+						<section class="card integration-card">
+							<header class="card-header integration-card-header">
+								<div class="integration-identity">
+									<span class="integration-icon" aria-hidden="true">{{template "icon_radio_tower" .}}</span>
+									<div>
+										<h2 class="card-title">MQTT with Mosquitto</h2>
+										<p class="card-subtitle">Broker connection and device messaging</p>
+									</div>
+								</div>
+								<span class="status-pill {{.MQTTStatusClass}}">{{.MQTTStatus}}</span>
+							</header>
+
+							<div class="card-body integration-card-body">
+								{{if .MQTTFormError}}<p class="form-error">{{.MQTTFormError}}</p>{{end}}
+								{{if .MQTTMessage}}<p class="form-success">{{.MQTTMessage}}</p>{{end}}
+								{{template "mqtt_integration_status" .}}
+
+								<label class="switch-field">
+									<span>
+										<span class="field-label">Active</span>
+										<span class="field-help">Connect Anchor to the MQTT broker</span>
+									</span>
+									<input type="checkbox" name="enabled" value="1" {{if .MQTT.Enabled}}checked{{end}}>
+									<span class="switch-control" aria-hidden="true"></span>
+								</label>
+
+								<div class="integration-fields">
+									<label class="field integration-field-wide">
+										<span class="field-label">Broker URL</span>
+										<input class="input value-mono" name="broker_url" type="url" value="{{.MQTT.BrokerURL}}" placeholder="mqtt://127.0.0.1:1883" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Client ID</span>
+										<input class="input value-mono" name="client_id" value="{{.MQTT.ClientID}}" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Username</span>
+										<input class="input value-mono" name="username" autocomplete="username" value="{{.MQTT.Username}}" required>
+									</label>
+									<label class="field">
+										<span class="field-label">Password</span>
+										<span class="password-input">
+											<input class="input" name="password" type="password" autocomplete="new-password" {{if .PasswordConfigured}}placeholder="Leave blank to keep current password"{{else}}required{{end}}>
+											{{template "password_toggle" .}}
+										</span>
+									</label>
+									<label class="field">
+										<span class="field-label">QoS</span>
+										<select class="select" name="qos">
+											<option value="0" {{if eq .MQTT.QoS 0}}selected{{end}}>0 - At most once</option>
+											<option value="1" {{if eq .MQTT.QoS 1}}selected{{end}}>1 - At least once</option>
+											<option value="2" {{if eq .MQTT.QoS 2}}selected{{end}}>2 - Exactly once</option>
+										</select>
+									</label>
+								</div>
+
+								<div class="integration-endpoints">
+									<h3 class="section-title">Mosquitto HTTP callbacks</h3>
+									<dl class="key-value-list">
+										<div class="key-value-row"><dt class="key-value-label">Authentication</dt><dd class="key-value-value value-mono">/mqtt/auth</dd></div>
+										<div class="key-value-row"><dt class="key-value-label">ACL</dt><dd class="key-value-value value-mono">/mqtt/acl</dd></div>
+										<div class="key-value-row"><dt class="key-value-label">Superuser</dt><dd class="key-value-value value-mono">/mqtt/superuser</dd></div>
+									</dl>
+								</div>
+
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Save configuration</button>
+								</div>
+							</div>
+						</section>
+					</form>
+				</main>
+{{template "app_page_end" .}}
+
+{{define "mqtt_integration_status"}}
+<section
+	id="mqtt-integration-status"
+	class="integration-status"
+	aria-live="polite"
+	hx-get="/integrations/mqtt/status"
+	hx-trigger="every 3s"
+	hx-swap="outerHTML"
+>
+	<div class="integration-status-heading">
+		<span class="field-label">Broker connection</span>
+		<span class="status-pill {{.MQTTConnectionStatusClass}}">{{.MQTTConnectionStatus}}</span>
+	</div>
+	<p class="integration-status-reason">{{.MQTTConnectionReason}}</p>
+	{{if .MQTTConnectionUpdatedAt}}
+		<p class="integration-status-updated">Updated {{localTime .MQTTConnectionUpdatedAt}}</p>
+	{{end}}
+</section>
+{{end}}

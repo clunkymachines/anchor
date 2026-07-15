@@ -28,6 +28,9 @@ type Config struct {
 	Password            string
 	QoS                 byte
 	FOTADownloadBaseURL string
+	OnConnected         func()
+	OnDisconnected      func()
+	OnConnectError      func(error)
 }
 
 // Client owns Anchor's internal MQTT connection.
@@ -79,13 +82,22 @@ func (c *Client) Start(ctx context.Context) (*autopaho.ConnectionManager, error)
 		ConnectPassword:               []byte(c.config.Password),
 		OnConnectionUp: func(manager *autopaho.ConnectionManager, _ *paho.Connack) {
 			c.logger.Info("mqtt client connected", "broker", c.config.BrokerURL, "client_id", c.config.ClientID)
+			if c.config.OnConnected != nil {
+				c.config.OnConnected()
+			}
 			go c.subscribe(ctx, manager)
 		},
 		OnConnectError: func(err error) {
 			c.logger.Warn("mqtt client connect failed", "err", err)
+			if c.config.OnConnectError != nil {
+				c.config.OnConnectError(err)
+			}
 		},
 		OnConnectionDown: func() bool {
 			c.logger.Warn("mqtt client connection down")
+			if c.config.OnDisconnected != nil {
+				c.config.OnDisconnected()
+			}
 			return true
 		},
 		ClientConfig: paho.ClientConfig{

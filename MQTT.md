@@ -210,25 +210,16 @@ Gateway mode is configured on the device in Anchor.
 
 ## Anchor MQTT Internal Client
 
-Anchor can connect to the broker as an internal MQTT client. Configure it with:
+Anchor can connect to the broker as an internal MQTT client. An Anchor admin configures it from **Integrations > MQTT with Mosquitto** using:
 
-```sh
-ANCHOR_MQTT_BROKER_URL=mqtt://127.0.0.1:1883
-ANCHOR_MQTT_CLIENT_ID=anchor-ingest
-ANCHOR_MQTT_USERNAME=anchor-ingest
-ANCHOR_MQTT_PASSWORD=change-me
-ANCHOR_MQTT_QOS=0
-```
+- Broker URL, such as `mqtt://127.0.0.1:1883`
+- Client ID, defaulting to `anchor-ingest` for a new configuration
+- Username, defaulting to `anchor-ingest` for a new configuration
+- Password
+- QoS `0`, `1`, or `2`
+- Active state
 
-Variables:
-
-- `ANCHOR_MQTT_BROKER_URL`: Broker URL. If unset, MQTT ingestion and task publishing are disabled.
-- `ANCHOR_MQTT_CLIENT_ID`: MQTT client ID. Defaults to `anchor-ingest`.
-- `ANCHOR_MQTT_USERNAME`: MQTT username. Defaults to the client ID.
-- `ANCHOR_MQTT_PASSWORD`: MQTT password. If unset, Anchor generates a random per-process password.
-- `ANCHOR_MQTT_QOS`: QoS for subscription and task publishes. Must be `0`, `1`, or `2`. Defaults to `0`.
-
-When using Anchor's Mosquitto auth callbacks, configure `ANCHOR_MQTT_PASSWORD` explicitly. The same username/password must be accepted by Anchor's `/mqtt/auth` endpoint for the internal client.
+Saving an active configuration connects the client immediately. Saving an inactive configuration disconnects it. When using Anchor's Mosquitto auth callbacks, the configured username and password are automatically accepted by Anchor's `/mqtt/auth` endpoint for the internal client.
 
 The internal client is allowed to:
 
