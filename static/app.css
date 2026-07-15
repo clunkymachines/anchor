@@ -1100,6 +1100,65 @@ a {
   margin: 0;
 }
 
+.device-tasks-table {
+  table-layout: fixed;
+  min-width: 1320px;
+}
+
+.device-tasks-table .device-task-id {
+  width: 58px;
+}
+
+.device-tasks-table .device-task-type {
+  width: 70px;
+}
+
+.device-tasks-table .device-task-summary {
+  width: 150px;
+}
+
+.device-tasks-table .device-task-status {
+  width: 130px;
+}
+
+.device-tasks-table .device-task-message {
+  width: 300px;
+}
+
+.device-tasks-table .device-task-campaign {
+  width: 130px;
+}
+
+.device-tasks-table .device-task-date {
+  width: 180px;
+}
+
+.device-tasks-table .device-task-actions {
+  width: 110px;
+}
+
+.device-tasks-table th,
+.device-tasks-table td {
+  vertical-align: top;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.device-task-wrap {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.device-task-actions-cell {
+  text-align: right;
+}
+
+.device-task-actions-cell form {
+  display: inline-flex;
+  margin: 0;
+}
+
 .table-pagination {
   display: flex;
   flex-wrap: wrap;

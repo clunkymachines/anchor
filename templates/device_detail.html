@@ -186,19 +186,19 @@
 	</header>
 
 	<div class="data-table-wrapper">
-		<table class="data-table">
+		<table class="data-table device-tasks-table">
 			<thead>
 				<tr>
-					<th scope="col">ID</th>
-					<th scope="col">Type</th>
-					<th scope="col">Task</th>
-					<th scope="col">Status</th>
-					<th scope="col">Message</th>
-					<th scope="col">Campaign</th>
-					<th scope="col">Created</th>
-					<th scope="col">Expires</th>
-					<th scope="col">Completed</th>
-					<th scope="col">Actions</th>
+					<th class="device-task-id" scope="col">ID</th>
+					<th class="device-task-type" scope="col">Type</th>
+					<th class="device-task-summary" scope="col">Task</th>
+					<th class="device-task-status" scope="col">Status</th>
+					<th class="device-task-message" scope="col">Message</th>
+					<th class="device-task-campaign" scope="col">Campaign</th>
+					<th class="device-task-date" scope="col">Created</th>
+					<th class="device-task-date" scope="col">Expires</th>
+					<th class="device-task-date" scope="col">Completed</th>
+					<th class="device-task-actions" scope="col">Actions</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -206,14 +206,14 @@
 					<tr>
 						<td class="value-mono">{{.ID}}</td>
 						<td>{{.Type}}</td>
-						<td class="value-mono table-cell-wrap">
+						<td class="device-task-wrap value-mono">
 							{{.Summary}}
 						</td>
 						<td><span class="status-pill {{.StatusClass}}">{{.Status}}</span></td>
-						<td class="table-cell-wrap">
+						<td class="device-task-wrap">
 							{{if .StatusMessage}}{{.StatusMessage}}{{else}}<span class="muted-text">None</span>{{end}}
 						</td>
-						<td>
+						<td class="device-task-actions-cell">
 							{{if .CampaignURL}}<a class="table-link" href="{{.CampaignURL}}">Campaign {{.CampaignID}}</a>{{else}}<span class="muted-text">Manual</span>{{end}}
 						</td>
 						<td class="value-mono">{{localTime .CreatedAt}}</td>
