@@ -34,6 +34,13 @@ type apiBulkUpsertDeviceRequest struct {
 	MQTTPassword     string                  `json:"mqtt_password"`
 	SoftwareVersions domain.SoftwareVersions `json:"software_versions"`
 	IsGateway        bool                    `json:"is_gateway"`
+	CoAP             *apiBulkCoAPCredential  `json:"coap,omitempty"`
+}
+
+type apiBulkCoAPCredential struct {
+	PSKIdentity string `json:"psk_identity"`
+	PSK         string `json:"psk"`
+	Enabled     *bool  `json:"enabled,omitempty"`
 }
 
 type apiBulkUpsertResponse struct {
@@ -48,6 +55,7 @@ type apiBulkUpsertDeviceResult struct {
 	MQTTUsername string        `json:"mqtt_username,omitempty"`
 	DataTopic    string        `json:"data_topic,omitempty"`
 	TaskTopic    string        `json:"task_topic,omitempty"`
+	CoAPIdentity string        `json:"coap_identity,omitempty"`
 	Error        *apiErrorBody `json:"error,omitempty"`
 }
 
@@ -194,6 +202,40 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 	}); err != nil {
 		result.Error = &apiErrorBody{Code: "device_upsert_error", Message: "Could not upsert device."}
 		return result
+	}
+	if req.CoAP != nil {
+		psk, err := domain.DecodeCoAPPSK(req.CoAP.PSK)
+		if err != nil {
+			result.Error = &apiErrorBody{Code: "coap_psk_invalid", Message: "coap.psk must be unpadded Base64URL for 16 to 64 bytes."}
+			return result
+		}
+		enabled := true
+		if req.CoAP.Enabled != nil {
+			enabled = *req.CoAP.Enabled
+		}
+		coapCredential := domain.CoAPCredential{DeviceID: req.ID, PSKIdentity: strings.TrimSpace(req.CoAP.PSKIdentity), PSK: psk, Enabled: enabled}
+		if _, lookupErr := s.store.LoadCoAPCredentialSummary(r.Context(), req.ID, organisationID); lookupErr == nil {
+			replaced, replaceErr := s.store.ReplaceCoAPCredential(r.Context(), coapCredential, organisationID)
+			if replaceErr != nil {
+				result.Error = &apiErrorBody{Code: "coap_credential_error", Message: "Could not replace CoAP credential."}
+				return result
+			}
+			coapCredential = replaced
+			if s.coAPInvalidator != nil {
+				_ = s.coAPInvalidator.Invalidate(r.Context(), req.ID, replaced.Revision, false)
+			}
+		} else if errors.Is(lookupErr, db.ErrNotFound) {
+			createdCredential, createErr := s.store.CreateCoAPCredential(r.Context(), coapCredential, organisationID)
+			if createErr != nil {
+				result.Error = &apiErrorBody{Code: "coap_credential_error", Message: "Could not create CoAP credential."}
+				return result
+			}
+			coapCredential = createdCredential
+		} else {
+			result.Error = &apiErrorBody{Code: "coap_credential_error", Message: "Could not load CoAP credential."}
+			return result
+		}
+		result.CoAPIdentity = coapCredential.PSKIdentity
 	}
 
 	result.Status = "updated"

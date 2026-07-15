@@ -20,6 +20,11 @@ func (s *Store) InsertDeviceEvent(ctx context.Context, event domain.DeviceEvent)
 	if err != nil {
 		return 0, err
 	}
+	if event.Direction == "inbound" {
+		if err := s.TouchDeviceLastSeen(ctx, event.DeviceID, event.TSReceivedMS); err != nil {
+			return 0, err
+		}
+	}
 	s.events.publish(event.DeviceID)
 	return id, nil
 }
@@ -42,6 +47,11 @@ func (s *Store) RecordDeviceEvent(ctx context.Context, event domain.DeviceEvent,
 	eventID, err := insertDeviceEvent(ctx, tx, s.dialect, event)
 	if err != nil {
 		return 0, err
+	}
+	if event.Direction == "inbound" {
+		if err := touchDeviceLastSeenTx(ctx, tx, s.dialect, event.DeviceID, event.TSReceivedMS); err != nil {
+			return 0, err
+		}
 	}
 
 	for _, property := range properties {
@@ -78,6 +88,86 @@ func (s *Store) RecordDeviceEvent(ctx context.Context, event domain.DeviceEvent,
 	}
 	s.events.publish(event.DeviceID)
 	return eventID, nil
+}
+
+// RecordCoAPOperation records an outbound request and optional inbound
+// response atomically. A response property is stored at the literal resource
+// path and is not recursively flattened.
+func (s *Store) RecordCoAPOperation(ctx context.Context, request domain.DeviceEvent, response *domain.DeviceEvent, property *domain.DeviceTwinProperty) error {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := insertDeviceEvent(ctx, tx, s.dialect, request); err != nil {
+		return err
+	}
+	if response != nil {
+		responseID, err := insertDeviceEvent(ctx, tx, s.dialect, *response)
+		if err != nil {
+			return err
+		}
+		if response.Direction == "inbound" {
+			if err := touchDeviceLastSeenTx(ctx, tx, s.dialect, response.DeviceID, response.TSReceivedMS); err != nil {
+				return err
+			}
+		}
+		if property != nil {
+			property.DeviceID = response.DeviceID
+			property.SourceEventID = &responseID
+			if property.TSReceivedMS == 0 {
+				property.TSReceivedMS = response.TSReceivedMS
+			}
+			if property.Protocol == "" {
+				property.Protocol = "coap"
+			}
+			if property.SourcePath == "" {
+				property.SourcePath = response.CoAPPath
+			}
+			if err := upsertDeviceTwinProperty(ctx, tx, s.dialect, *property); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.events.publish(request.DeviceID)
+	return nil
+}
+
+// TouchDeviceLastSeen advances protocol-neutral connectivity state without
+// creating an audit event. Older timestamps are intentionally ignored.
+func (s *Store) TouchDeviceLastSeen(ctx context.Context, deviceID string, timestampMS int64) error {
+	if timestampMS <= 0 {
+		return fmt.Errorf("last seen timestamp must be positive")
+	}
+	if err := touchDeviceLastSeenTx(ctx, s.writeDB, s.dialect, deviceID, timestampMS); err != nil {
+		return err
+	}
+	s.events.publish(deviceID)
+	return nil
+}
+
+func touchDeviceLastSeenTx(ctx context.Context, runner queryRunner, dialect Dialect, deviceID string, timestampMS int64) error {
+	query := `UPDATE devices SET last_seen_ms = CASE WHEN last_seen_ms < ? THEN ? ELSE last_seen_ms END, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+	args := []any{timestampMS, timestampMS, deviceID}
+	if dialect == DialectPostgres || dialect == DialectPostgreSQL {
+		query = `UPDATE devices SET last_seen_ms = GREATEST(last_seen_ms, $1), updated_at = NOW() WHERE id = $2`
+		args = []any{timestampMS, deviceID}
+	}
+	result, err := runner.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func firmwareVersionFromTelemetryProperty(property domain.DeviceTwinProperty) (string, bool) {

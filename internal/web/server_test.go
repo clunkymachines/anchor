@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -441,7 +442,7 @@ func TestDevicesPostCreatesDeviceWithSelectedModel(t *testing.T) {
 	}
 	modelID := testDeviceModelID(t, store, organisationID, "Sensor")
 
-	server := &Server{store: store}
+	server := testServerWithTemplates(t, store)
 	req := formRequest(http.MethodPost, "/devices", url.Values{
 		"organisation_id": {strconv.FormatInt(organisationID, 10)},
 		"device_id":       {"device-001"},
@@ -461,6 +462,115 @@ func TestDevicesPostCreatesDeviceWithSelectedModel(t *testing.T) {
 	}
 	if detail.Device.DeviceModelID != modelID || detail.Device.ModelName != "Sensor" {
 		t.Fatalf("unexpected device model link: %#v", detail.Device)
+	}
+	detailReq := httptest.NewRequest(http.MethodGet, "/devices/device-001?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	detailReq.SetPathValue("deviceID", "device-001")
+	detailReq = detailReq.WithContext(context.WithValue(detailReq.Context(), userContextKey, domain.User{ID: userID, Email: "member@example.com"}))
+	detailRes := httptest.NewRecorder()
+	server.deviceDetail(detailRes, detailReq)
+	if detailRes.Code != http.StatusOK || !strings.Contains(detailRes.Body.String(), "MQTT configuration") || !strings.Contains(detailRes.Body.String(), "Data publish topic") || strings.Contains(detailRes.Body.String(), "PSK identity") || strings.Contains(detailRes.Body.String(), `aria-label="Communication type"`) {
+		t.Fatalf("expected MQTT-only detail without protocol tabs, got %d body=%q", detailRes.Code, detailRes.Body.String())
+	}
+}
+
+func TestDevicesPostCreatesCoAPCredentialForCoAPModel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{Email: "member@example.com", Name: "Member", PasswordHash: "hash"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{UserID: userID, OrganisationID: organisationID}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	modelID, err := store.CreateDeviceModel(ctx, domain.DeviceModel{
+		OrganisationID:           organisationID,
+		Name:                     "Constrained sensor",
+		ExpectedHeartbeatSeconds: 60,
+		ExpectedProtocol:         "coap",
+	})
+	if err != nil {
+		t.Fatalf("create CoAP model: %v", err)
+	}
+
+	server := testServerWithTemplates(t, store)
+	getReq := httptest.NewRequest(http.MethodGet, "/devices/new?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), userContextKey, domain.User{ID: userID, Email: "member@example.com"}))
+	getRes := httptest.NewRecorder()
+	server.deviceNew(getRes, getReq)
+	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), `data-protocol="coap"`) || !strings.Contains(getRes.Body.String(), `data-device-protocol-config="mqtt"`) || !strings.Contains(getRes.Body.String(), `data-device-protocol-config="coap"`) {
+		t.Fatalf("expected model-driven MQTT and CoAP form panels, got %d body=%q", getRes.Code, getRes.Body.String())
+	}
+
+	req := formRequest(http.MethodPost, "/devices", url.Values{
+		"organisation_id": {strconv.FormatInt(organisationID, 10)},
+		"device_id":       {"coap-001"},
+		"device_model_id": {strconv.FormatInt(modelID, 10)},
+	}, domain.User{ID: userID, Email: "member@example.com"})
+	res := httptest.NewRecorder()
+	server.devicesPost(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("expected CoAP credential response, got %d body=%q", res.Code, res.Body.String())
+	}
+
+	credential, err := store.ResolveCoAPCredential(ctx, "coap-001")
+	if err != nil {
+		t.Fatalf("resolve generated CoAP credential: %v", err)
+	}
+	if len(credential.PSK) != 16 || credential.ExpectedProtocol != "coap" {
+		t.Fatalf("unexpected generated CoAP credential: %#v", credential)
+	}
+	body := res.Body.String()
+	if !strings.Contains(body, hex.EncodeToString(credential.PSK)) || !strings.Contains(body, "Anchor will not show it again") {
+		t.Fatalf("expected one-time generated credential disclosure, got %q", body)
+	}
+	if _, err := store.FindMQTTCredentialByUsername(ctx, "coap-001"); !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("expected no MQTT credential for CoAP model, got %v", err)
+	}
+	detailReq := httptest.NewRequest(http.MethodGet, "/devices/coap-001?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	detailReq.SetPathValue("deviceID", "coap-001")
+	detailReq = detailReq.WithContext(context.WithValue(detailReq.Context(), userContextKey, domain.User{ID: userID, Email: "member@example.com"}))
+	detailRes := httptest.NewRecorder()
+	server.deviceDetail(detailRes, detailReq)
+	detailBody := detailRes.Body.String()
+	if detailRes.Code != http.StatusOK || !strings.Contains(detailBody, "PSK identity") || !strings.Contains(detailBody, "Hidden after creation") || strings.Contains(detailBody, "MQTT username") || strings.Contains(detailBody, "Data publish topic") || strings.Contains(detailBody, `aria-label="Communication type"`) {
+		t.Fatalf("expected CoAP-only detail without protocol tabs, got %d body=%q", detailRes.Code, detailBody)
+	}
+
+	importedPSK := bytes.Repeat([]byte{0xab}, 16)
+	importedHex := hex.EncodeToString(importedPSK)
+	req = formRequest(http.MethodPost, "/devices", url.Values{
+		"organisation_id":   {strconv.FormatInt(organisationID, 10)},
+		"device_id":         {"coap-imported"},
+		"device_model_id":   {strconv.FormatInt(modelID, 10)},
+		"coap_psk_identity": {"manufacturing-001"},
+		"coap_psk":          {importedHex},
+	}, domain.User{ID: userID, Email: "member@example.com"})
+	res = httptest.NewRecorder()
+	server.devicesPost(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("expected imported hexadecimal CoAP credential response, got %d body=%q", res.Code, res.Body.String())
+	}
+	importedCredential, err := store.ResolveCoAPCredential(ctx, "manufacturing-001")
+	if err != nil {
+		t.Fatalf("resolve imported CoAP credential: %v", err)
+	}
+	if !bytes.Equal(importedCredential.PSK, importedPSK) || !strings.Contains(res.Body.String(), importedHex) {
+		t.Fatalf("expected hexadecimal PSK to round trip, got credential=%#v body=%q", importedCredential, res.Body.String())
 	}
 }
 

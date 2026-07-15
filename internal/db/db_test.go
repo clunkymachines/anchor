@@ -1195,6 +1195,75 @@ func TestDeviceListPageSearchPaginationAndMetrics(t *testing.T) {
 	}
 }
 
+func TestDeviceListPageUsesProtocolNeutralLastSeenAndIncludesCoAP(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, Config{
+		Dialect: DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID := testOrganisationID(t, store)
+	modelID, err := store.CreateDeviceModel(ctx, domain.DeviceModel{
+		OrganisationID:           organisationID,
+		Name:                     "CoAP sensor",
+		ExpectedHeartbeatSeconds: 60,
+		ExpectedProtocol:         "coap",
+	})
+	if err != nil {
+		t.Fatalf("create coap device model: %v", err)
+	}
+	if _, err := store.SaveDeviceWithCoAPCredential(ctx, domain.DeviceWithCoAPCredential{
+		Device: domain.Device{
+			ID:               "coap-01",
+			OrganisationID:   organisationID,
+			DeviceModelID:    modelID,
+			SoftwareVersions: domain.SoftwareVersions{},
+		},
+		Credential: domain.CoAPCredential{
+			DeviceID:    "coap-01",
+			PSKIdentity: "coap-01",
+			PSK:         []byte("0123456789abcdef"),
+			Enabled:     true,
+		},
+	}); err != nil {
+		t.Fatalf("save device with coap credential: %v", err)
+	}
+
+	lastSeenMS := time.Date(2026, 7, 15, 20, 25, 51, 0, time.UTC).UnixMilli()
+	if err := store.TouchDeviceLastSeen(ctx, "coap-01", lastSeenMS); err != nil {
+		t.Fatalf("touch device last seen: %v", err)
+	}
+
+	page := mustDevicePage(t, store, DeviceListQuery{
+		OrganisationID: organisationID,
+		Page:           1,
+		PageSize:       50,
+	})
+	if len(page.Rows) != 1 {
+		t.Fatalf("expected one device row, got %#v", page.Rows)
+	}
+	row := page.Rows[0]
+	if row.Device.LastSeenMS != lastSeenMS || row.Device.LastEventReceivedMS != lastSeenMS {
+		t.Fatalf("expected list row to use protocol-neutral last seen %d, got %#v", lastSeenMS, row.Device)
+	}
+	if row.Device.ExpectedProtocol != "coap" || !row.HasCoAPCredential || row.HasMQTTCredential {
+		t.Fatalf("unexpected communication metadata: %#v", row)
+	}
+	events, err := store.ListRecentDeviceEvents(ctx, "coap-01", organisationID, 10)
+	if err != nil {
+		t.Fatalf("list recent device events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("heartbeat-only activity must not require an event, got %#v", events)
+	}
+}
+
 func TestDeleteDeviceRemovesMQTTConfig(t *testing.T) {
 	t.Parallel()
 

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -128,6 +130,55 @@ func NormalizeTaskPath(path string) (string, error) {
 		}
 	}
 	return path, nil
+}
+
+// ValidateCoAPResourcePath validates a literal absolute CoAP resource path.
+// CoAP paths are intentionally not normalized or translated: the device sees
+// exactly the path supplied by the administrator.
+func ValidateCoAPResourcePath(path string) error {
+	if path == "" {
+		return errors.New("CoAP resource path is required")
+	}
+	if !utf8.ValidString(path) {
+		return errors.New("CoAP resource path must be valid UTF-8")
+	}
+	if len(path) > TaskPathMaxLength {
+		return fmt.Errorf("CoAP resource path is longer than %d bytes", TaskPathMaxLength)
+	}
+	if !strings.HasPrefix(path, "/") {
+		return errors.New("CoAP resource path must start with /")
+	}
+	for _, r := range path {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return errors.New("CoAP resource path cannot contain whitespace or control characters")
+		}
+	}
+	u, err := url.ParseRequestURI(path)
+	if err != nil || u.Path != path || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("CoAP resource path must be a literal URI path without query or fragment")
+	}
+	for _, segment := range strings.Split(path, "/")[1:] {
+		if segment == "." || segment == ".." {
+			return errors.New("CoAP resource path cannot contain dot segments")
+		}
+	}
+	return nil
+}
+
+// ValidatePSKIdentity validates the opaque identity used by a CoAPS PSK.
+func ValidatePSKIdentity(identity string) error {
+	if !utf8.ValidString(identity) {
+		return errors.New("PSK identity must be valid UTF-8")
+	}
+	if len(identity) < 1 || len(identity) > 128 {
+		return errors.New("PSK identity must be between 1 and 128 bytes")
+	}
+	for _, r := range identity {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return errors.New("PSK identity cannot contain whitespace or control characters")
+		}
+	}
+	return nil
 }
 
 func normalizeTaskPaths(paths []string) ([]string, error) {

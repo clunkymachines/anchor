@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
+	"anchor/internal/coapcontrol"
 	"anchor/internal/db"
+	"anchor/internal/domain"
 	"anchor/internal/mqtt"
 	"anchor/internal/web"
 )
@@ -37,6 +42,18 @@ func main() {
 	}
 	defer mqttManager.Close()
 
+	if err := configureCoAPIntegration(ctx, store); err != nil {
+		slog.Error("configure CoAP integration", "err", err)
+		os.Exit(1)
+	}
+	coapManager := coapcontrol.NewSwitcher(os.Getenv("ANCHOR_FOTA_DOWNLOAD_BASE_URL"))
+	if coapConfig, err := store.CoAPIntegration(ctx); err == nil {
+		if err = coapManager.ApplyCoAPIntegration(ctx, coapConfig); err != nil {
+			slog.Error("start CoAP integration", "err", err)
+			os.Exit(1)
+		}
+	}
+
 	server := &http.Server{
 		Addr: envOrDefault("ANCHOR_HTTP_ADDR", defaultHTTPAddr),
 		Handler: web.NewServer(store, web.ServerConfig{
@@ -44,6 +61,9 @@ func main() {
 			CVEScanWorkerEnabled:   true,
 			CVEScannerPath:         os.Getenv("ANCHOR_GRYPE_PATH"),
 			MQTTIntegrationRuntime: mqttManager,
+			CoAPTaskPublisher:      coapManager,
+			CoAPIntegrationRuntime: coapManager,
+			CoAPInvalidator:        coapManager,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -53,6 +73,36 @@ func main() {
 		slog.Error("server stopped unexpectedly", "err", err)
 		os.Exit(1)
 	}
+}
+
+func configureCoAPIntegration(ctx context.Context, store *db.Store) error {
+	enabledValue, hasEnabled := os.LookupEnv("ANCHOR_COAP_ENABLED")
+	frontendURL, hasURL := os.LookupEnv("ANCHOR_COAP_FRONTEND_URL")
+	token, hasToken := os.LookupEnv("COAP_INTERNAL_BEARER_TOKEN")
+	if !hasEnabled && !hasURL && !hasToken {
+		return nil
+	}
+
+	config, err := store.CoAPIntegration(ctx)
+	if errors.Is(err, db.ErrNotFound) {
+		config = domain.CoAPIntegrationConfig{}
+	} else if err != nil {
+		return err
+	}
+	if hasEnabled {
+		parsed, err := strconv.ParseBool(enabledValue)
+		if err != nil {
+			return fmt.Errorf("ANCHOR_COAP_ENABLED must be true or false: %w", err)
+		}
+		config.Enabled = parsed
+	}
+	if hasURL {
+		config.FrontendURL = frontendURL
+	}
+	if hasToken && token != "" {
+		config.BearerToken = token
+	}
+	return store.SaveCoAPIntegration(ctx, config)
 }
 
 func dbConfigFromEnv() db.Config {

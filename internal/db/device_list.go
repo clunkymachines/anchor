@@ -93,18 +93,13 @@ func (s *Store) DeviceFleetMetrics(ctx context.Context, organisationID int64, no
 		SELECT
 			COUNT(d.id),
 			COALESCE(SUM(CASE
-				WHEN last_event.last_received_ms IS NOT NULL
-					AND ? - last_event.last_received_ms <= m.expected_heartbeat_seconds * 1000
+				WHEN d.last_seen_ms > 0
+					AND ? - d.last_seen_ms <= m.expected_heartbeat_seconds * 1000
 				THEN 1 ELSE 0
 			END), 0),
 			(SELECT COUNT(*) FROM device_models WHERE organisation_id = ?)
 		FROM devices d
 		JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
-		LEFT JOIN (
-			SELECT device_id, MAX(ts_received_ms) AS last_received_ms
-			FROM device_events
-			GROUP BY device_id
-		) last_event ON last_event.device_id = d.id
 		WHERE d.organisation_id = ?
 	`
 	args := []any{nowMS, organisationID, organisationID}
@@ -113,18 +108,13 @@ func (s *Store) DeviceFleetMetrics(ctx context.Context, organisationID int64, no
 			SELECT
 				COUNT(d.id),
 				COALESCE(SUM(CASE
-					WHEN last_event.last_received_ms IS NOT NULL
-						AND $1 - last_event.last_received_ms <= m.expected_heartbeat_seconds * 1000
+					WHEN d.last_seen_ms > 0
+						AND $1 - d.last_seen_ms <= m.expected_heartbeat_seconds * 1000
 					THEN 1 ELSE 0
 				END), 0),
 				(SELECT COUNT(*) FROM device_models WHERE organisation_id = $2)
 			FROM devices d
 			JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
-			LEFT JOIN (
-				SELECT device_id, MAX(ts_received_ms) AS last_received_ms
-				FROM device_events
-				GROUP BY device_id
-			) last_event ON last_event.device_id = d.id
 			WHERE d.organisation_id = $3
 		`
 	}
@@ -166,16 +156,12 @@ func (s *Store) countDevicePageRows(ctx context.Context, query DeviceListQuery) 
 func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, pagination Pagination) ([]domain.DeviceListRow, error) {
 	sqlQuery := `
 		SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
-			COALESCE((
-				SELECT e.ts_received_ms
-				FROM device_events e
-				WHERE e.device_id = d.id
-				ORDER BY e.ts_received_ms DESC
-				LIMIT 1
-			), 0),
+			m.expected_protocol,
+			d.last_seen_ms,
 			d.software_versions,
 			d.is_gateway,
 			CASE WHEN mc.device_id IS NULL THEN 0 ELSE 1 END,
+			CASE WHEN cc.device_id IS NULL THEN 0 ELSE 1 END,
 			r.id,
 			r.cve_status,
 			r.active_cve_count,
@@ -186,6 +172,7 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 		FROM devices d
 		JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
 		LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
+		LEFT JOIN coap_credentials cc ON cc.device_id = d.id
 		LEFT JOIN software_releases r ON r.organisation_id = d.organisation_id
 			AND r.device_model_id = d.device_model_id
 			AND r.version = json_extract(d.software_versions, '$.firmware')
@@ -198,16 +185,12 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 	if s.isPostgres() {
 		sqlQuery = `
 			SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
-				COALESCE((
-					SELECT e.ts_received_ms
-					FROM device_events e
-					WHERE e.device_id = d.id
-					ORDER BY e.ts_received_ms DESC
-					LIMIT 1
-				), 0),
+				m.expected_protocol,
+				d.last_seen_ms,
 				d.software_versions,
 				d.is_gateway,
 				CASE WHEN mc.device_id IS NULL THEN FALSE ELSE TRUE END,
+				CASE WHEN cc.device_id IS NULL THEN FALSE ELSE TRUE END,
 				r.id,
 				r.cve_status,
 				r.active_cve_count,
@@ -218,6 +201,7 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 			FROM devices d
 			JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
 			LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
+			LEFT JOIN coap_credentials cc ON cc.device_id = d.id
 			LEFT JOIN software_releases r ON r.organisation_id = d.organisation_id
 				AND r.device_model_id = d.device_model_id
 				AND r.version = d.software_versions ->> 'firmware'
@@ -240,6 +224,7 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 			device             domain.Device
 			versions           softwareVersionsValue
 			hasMQTTCredential  bool
+			hasCoAPCredential  bool
 			releaseID          nullableInt64
 			statusValue        nullableString
 			activeCount        nullableInt64
@@ -254,10 +239,12 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 			&device.DeviceModelID,
 			&device.ModelName,
 			&device.ExpectedHeartbeatSeconds,
-			&device.LastEventReceivedMS,
+			&device.ExpectedProtocol,
+			&device.LastSeenMS,
 			&versions,
 			&device.IsGateway,
 			&hasMQTTCredential,
+			&hasCoAPCredential,
 			&releaseID,
 			&statusValue,
 			&activeCount,
@@ -269,6 +256,7 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 			return nil, err
 		}
 		device.SoftwareVersions = domain.SoftwareVersions(versions)
+		device.LastEventReceivedMS = device.LastSeenMS
 		status := domain.CalculateDeviceCVEStatus(false, domain.CVEImpactStatus{})
 		if releaseID.Valid {
 			status = domain.CalculateDeviceCVEStatus(true, scanCVEImpactStatusFields(
@@ -284,6 +272,7 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 		deviceRows = append(deviceRows, domain.DeviceListRow{
 			Device:            device,
 			HasMQTTCredential: hasMQTTCredential,
+			HasCoAPCredential: hasCoAPCredential,
 			CVEStatus:         status,
 		})
 	}

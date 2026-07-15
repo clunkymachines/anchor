@@ -7,6 +7,7 @@
 						</div>
 					</header>
 
+					<div class="integration-stack">
 					<form class="integration-form" method="post" action="/integrations/mqtt">
 						<section class="card integration-card">
 							<header class="card-header integration-card-header">
@@ -79,6 +80,65 @@
 							</div>
 						</section>
 					</form>
+
+					<form class="integration-form" method="post" action="/integrations/coap">
+						<section class="card integration-card">
+							<header class="card-header integration-card-header">
+								<div class="integration-identity">
+									<span class="integration-icon" aria-hidden="true">{{template "icon_radio_tower" .}}</span>
+									<div>
+										<h2 class="card-title">CoAP / DTLS frontend</h2>
+										<p class="card-subtitle">Secure constrained-device connectivity</p>
+									</div>
+								</div>
+								<span class="status-pill {{.CoAPStatusClass}}">{{.CoAPStatus}}</span>
+							</header>
+
+							<div class="card-body integration-card-body">
+								{{if .CoAPFormError}}<p class="form-error">{{.CoAPFormError}}</p>{{end}}
+								{{if .CoAPMessage}}<p class="form-success">{{.CoAPMessage}}</p>{{end}}
+								{{template "coap_integration_status" .}}
+
+								<label class="switch-field">
+									<span>
+										<span class="field-label">Active</span>
+										<span class="field-help">Accept authenticated CoAP frontend traffic</span>
+									</span>
+									<input type="checkbox" name="enabled" value="1" {{if .CoAP.Enabled}}checked{{end}}>
+									<span class="switch-control" aria-hidden="true"></span>
+								</label>
+
+								<div class="integration-fields">
+									<label class="field integration-field-wide">
+										<span class="field-label">Frontend private URL</span>
+										<span class="field-help">Plain HTTP on the trusted private network; never expose this endpoint publicly.</span>
+										<input class="input value-mono" name="frontend_url" type="url" value="{{.CoAP.FrontendURL}}" placeholder="http://127.0.0.1:8081" {{if .CoAP.Enabled}}required{{end}}>
+									</label>
+									<label class="field integration-field-wide">
+										<span class="field-label">Bearer token</span>
+										<span class="field-help">Must match <span class="value-mono">COAP_INTERNAL_BEARER_TOKEN</span> on the frontend.</span>
+										<span class="password-input">
+											<input class="input" name="bearer_token" type="password" autocomplete="new-password" {{if .CoAPTokenConfigured}}placeholder="Leave blank to keep current token"{{else if .CoAP.Enabled}}required{{end}}>
+											{{template "password_toggle" .}}
+										</span>
+									</label>
+								</div>
+
+								<div class="integration-endpoints">
+									<h3 class="section-title">Internal API</h3>
+									<dl class="key-value-list">
+										<div class="key-value-row"><dt class="key-value-label">Anchor callback base</dt><dd class="key-value-value value-mono">/internal/coap/v1</dd></div>
+										<div class="key-value-row"><dt class="key-value-label">Device endpoint</dt><dd class="key-value-value value-mono">CoAPS UDP 5684</dd></div>
+									</dl>
+								</div>
+
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Save configuration</button>
+								</div>
+							</div>
+						</section>
+					</form>
+					</div>
 				</main>
 {{template "app_page_end" .}}
 
@@ -98,6 +158,26 @@
 	<p class="integration-status-reason">{{.MQTTConnectionReason}}</p>
 	{{if .MQTTConnectionUpdatedAt}}
 		<p class="integration-status-updated">Updated {{localTime .MQTTConnectionUpdatedAt}}</p>
+	{{end}}
+</section>
+{{end}}
+
+{{define "coap_integration_status"}}
+<section
+	id="coap-integration-status"
+	class="integration-status"
+	aria-live="polite"
+	hx-get="/integrations/coap/status"
+	hx-trigger="every 3s"
+	hx-swap="outerHTML"
+>
+	<div class="integration-status-heading">
+		<span class="field-label">Frontend health</span>
+		<span class="status-pill {{.CoAPFrontendStatusClass}}">{{.CoAPFrontendStatus}}</span>
+	</div>
+	<p class="integration-status-reason">{{.CoAPFrontendReason}}</p>
+	{{if .CoAP.UpdatedAt}}
+		<p class="integration-status-updated">Checked {{localTime .CoAP.UpdatedAt}}</p>
 	{{end}}
 </section>
 {{end}}

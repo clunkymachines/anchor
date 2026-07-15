@@ -609,7 +609,7 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 18px;
+  padding: 16px 18px 0;
 }
 
 .card-body {
@@ -861,8 +861,14 @@ a {
   margin-bottom: 16px;
 }
 
-.integration-form {
+.integration-stack {
+  display: grid;
+  gap: 16px;
   max-width: 900px;
+}
+
+.integration-form {
+  margin: 0;
 }
 
 .integration-card {
@@ -901,6 +907,7 @@ a {
 .integration-card-body {
   display: grid;
   gap: 22px;
+  padding-top: 16px;
 }
 
 .integration-status {
@@ -1147,6 +1154,10 @@ a {
 .tab-panel {
   display: grid;
   gap: 16px;
+}
+
+[data-device-protocol-config][hidden] {
+  display: none;
 }
 
 .telemetry-tabs {

@@ -214,6 +214,40 @@ func (s *Store) ListPendingDeviceTasks(ctx context.Context, deviceID string, org
 	return s.listDeviceTasks(ctx, deviceID, organisationID, "t.status = 'pending'", "t.created_at ASC, t.id ASC", 0)
 }
 
+// OldestPendingCoAPTask returns only a task routed to a CoAP device model.
+func (s *Store) OldestPendingCoAPTask(ctx context.Context, deviceID string, organisationID int64) (domain.DeviceTask, error) {
+	query := `
+		SELECT t.id, t.device_id, t.campaign_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.expires_at, t.completed_at
+		FROM device_tasks t JOIN devices d ON d.id = t.device_id JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
+		WHERE t.device_id = ? AND d.organisation_id = ? AND t.status = 'pending' AND m.expected_protocol = 'coap'
+		ORDER BY t.created_at ASC, t.id ASC LIMIT 1`
+	args := []any{deviceID, organisationID}
+	if s.isPostgres() {
+		query = numberedPlaceholders(query)
+	}
+	row := s.readDB.QueryRowContext(ctx, query, args...)
+	task, err := scanDeviceTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DeviceTask{}, ErrNotFound
+	}
+	return task, err
+}
+
+// DeviceTaskForDevice returns one task only when both device and organisation
+// ownership match. It is used by trusted transport callbacks before recording
+// task-correlated audit events.
+func (s *Store) DeviceTaskForDevice(ctx context.Context, taskID int64, deviceID string, organisationID int64) (domain.DeviceTask, error) {
+	query := `SELECT t.id, t.device_id, t.campaign_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.expires_at, t.completed_at FROM device_tasks t JOIN devices d ON d.id = t.device_id WHERE t.id = ? AND t.device_id = ? AND d.organisation_id = ?`
+	if s.isPostgres() {
+		query = numberedPlaceholders(query)
+	}
+	task, err := scanDeviceTask(s.readDB.QueryRowContext(ctx, query, taskID, deviceID, organisationID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DeviceTask{}, ErrNotFound
+	}
+	return task, err
+}
+
 // ListActiveAndRecentDeviceTasks returns all non-terminal tasks followed by the
 // most recently completed tasks. A non-positive completedLimit defaults to three.
 func (s *Store) ListActiveAndRecentDeviceTasks(ctx context.Context, deviceID string, organisationID int64, completedLimit int) ([]domain.DeviceTask, error) {

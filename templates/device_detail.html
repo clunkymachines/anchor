@@ -38,15 +38,21 @@
 										<dd class="key-value-value">{{.Device.ModelName}}</dd>
 									</div>
 									<div class="key-value-row">
-										<dt class="key-value-label">Gateway</dt>
-										<dd class="key-value-value">
-											{{if .Device.IsGateway}}
-												<span class="status-pill status-success">Enabled</span>
-											{{else}}
-												<span class="status-pill status-neutral">Disabled</span>
-											{{end}}
-										</dd>
+										<dt class="key-value-label">Protocol</dt>
+										<dd class="key-value-value"><span class="protocol-pill">{{.Device.ProtocolLabel}}</span></dd>
 									</div>
+									{{if eq .Device.ExpectedProtocol "mqtt"}}
+										<div class="key-value-row">
+											<dt class="key-value-label">Gateway</dt>
+											<dd class="key-value-value">
+												{{if .Device.IsGateway}}
+													<span class="status-pill status-success">Enabled</span>
+												{{else}}
+													<span class="status-pill status-neutral">Disabled</span>
+												{{end}}
+											</dd>
+										</div>
+									{{end}}
 									<div class="key-value-row">
 										<dt class="key-value-label">Software</dt>
 										<dd class="key-value-value value-mono">{{.Device.SoftwareVersions}}</dd>
@@ -105,17 +111,12 @@
 							<header class="card-header">
 								<div>
 									<h2 class="card-title">Communication</h2>
+									<p class="card-subtitle">{{.Device.ProtocolLabel}} configuration</p>
 								</div>
 							</header>
 							<div class="card-body">
-								<div class="tabs" aria-label="Communication type">
-									<a class="tab-item is-active" href="#mqtt">MQTT</a>
-									<span class="tab-item is-disabled">CoAP</span>
-									<span class="tab-item is-disabled">LwM2M</span>
-									<span class="tab-item is-disabled">BLE</span>
-								</div>
-
-								<section class="tab-panel" id="mqtt">
+								{{if eq .Device.ExpectedProtocol "mqtt"}}
+									<div><span class="protocol-pill">MQTT</span></div>
 									{{if .MQTTCredential}}
 										<dl class="key-value-list">
 											<div class="key-value-row">
@@ -160,7 +161,69 @@
 											<p class="empty-state-text">Create or edit the device with MQTT communication details to enable broker authentication and topic checks.</p>
 										</div>
 									{{end}}
-								</section>
+								{{else if eq .Device.ExpectedProtocol "coap"}}
+									<div><span class="protocol-pill">CoAP over DTLS</span></div>
+									{{if .CoAPCredential}}
+										<dl class="key-value-list">
+											<div class="key-value-row">
+												<dt class="key-value-label">PSK identity</dt>
+												<dd class="key-value-value value-mono">{{.CoAPCredential.PSKIdentity}}</dd>
+											</div>
+											<div class="key-value-row">
+												<dt class="key-value-label">Credential</dt>
+												<dd class="key-value-value">
+													{{if .CoAPCredential.Enabled}}
+														<span class="status-pill status-success">Enabled</span>
+													{{else}}
+														<span class="status-pill status-neutral">Disabled</span>
+													{{end}}
+												</dd>
+											</div>
+								<div class="key-value-row">
+									<dt class="key-value-label">Revision</dt>
+									<dd class="key-value-value value-mono">{{.CoAPCredential.Revision}}</dd>
+								</div>
+								<div class="key-value-row">
+									<dt class="key-value-label">Association</dt>
+									<dd class="key-value-value">{{.CoAPCredential.Association}}</dd>
+								</div>
+								<div class="key-value-row">
+									<dt class="key-value-label">DTLS CID</dt>
+									<dd class="key-value-value">{{.CoAPCredential.CID}}</dd>
+								</div>
+								<div class="key-value-row">
+									<dt class="key-value-label">Pre-shared key</dt>
+									<dd class="key-value-value muted-text">Hidden after creation</dd>
+								</div>
+							</dl>
+							<form class="form-stack" method="post" action="/devices/{{.Device.ID}}/coap/replace">
+								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+								<label class="field">
+									<span class="field-label">Replacement PSK identity</span>
+									<input class="input value-mono" name="coap_psk_identity" value="{{.CoAPCredential.PSKIdentity}}" required>
+								</label>
+								<label class="field">
+									<span class="field-label">Replacement PSK (hexadecimal)</span>
+									<input class="input value-mono" name="coap_psk" autocomplete="new-password" placeholder="Leave blank to generate">
+								</label>
+								<button class="button button-secondary" type="submit">Replace credential</button>
+							</form>
+							<form method="post" action="/devices/{{.Device.ID}}/coap/toggle">
+								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+								<button class="button button-secondary" type="submit">{{if .CoAPCredential.Enabled}}Disable credential{{else}}Enable credential{{end}}</button>
+							</form>
+									{{else}}
+										<div class="empty-state">
+											<h3 class="empty-state-title">CoAP is not configured</h3>
+											<p class="empty-state-text">This device does not have a CoAP PSK credential.</p>
+										</div>
+									{{end}}
+								{{else}}
+									<div class="empty-state">
+										<h3 class="empty-state-title">{{.Device.ProtocolLabel}} details are unavailable</h3>
+										<p class="empty-state-text">This protocol does not have a device communication view yet.</p>
+									</div>
+								{{end}}
 							</div>
 						</section>
 					</div>

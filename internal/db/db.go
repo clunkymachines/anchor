@@ -287,6 +287,7 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				id TEXT PRIMARY KEY,
 				organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
 				device_model_id INTEGER NOT NULL,
+				last_seen_ms INTEGER NOT NULL DEFAULT 0,
 				software_versions TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(software_versions)),
 				is_gateway INTEGER NOT NULL DEFAULT 0 CHECK (is_gateway IN (0, 1)),
 				device_search_text TEXT NOT NULL DEFAULT '',
@@ -300,6 +301,22 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				password_hash TEXT NOT NULL,
 				enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
+			`CREATE TABLE IF NOT EXISTS coap_credentials (
+				device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+				psk_identity TEXT NOT NULL UNIQUE,
+				psk BLOB NOT NULL CHECK (length(psk) BETWEEN 16 AND 64),
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
+			`CREATE TABLE IF NOT EXISTS coap_integration (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+				frontend_url TEXT NOT NULL,
+				bearer_token TEXT NOT NULL,
 				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 			);`,
 			`CREATE TABLE IF NOT EXISTS device_events (
@@ -541,6 +558,7 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				id TEXT PRIMARY KEY,
 				organisation_id BIGINT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
 				device_model_id BIGINT NOT NULL,
+				last_seen_ms BIGINT NOT NULL DEFAULT 0,
 				software_versions JSONB NOT NULL DEFAULT '{}'::jsonb,
 				is_gateway BOOLEAN NOT NULL DEFAULT FALSE,
 				device_search_text TEXT NOT NULL DEFAULT '',
@@ -554,6 +572,22 @@ func (d Dialect) schemaStatements() ([]string, error) {
 				password_hash TEXT NOT NULL,
 				enabled BOOLEAN NOT NULL DEFAULT TRUE,
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);`,
+			`CREATE TABLE IF NOT EXISTS coap_credentials (
+				device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+				psk_identity TEXT NOT NULL UNIQUE,
+				psk BYTEA NOT NULL CHECK (octet_length(psk) BETWEEN 16 AND 64),
+				revision BIGINT NOT NULL CHECK (revision > 0),
+				enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);`,
+			`CREATE TABLE IF NOT EXISTS coap_integration (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				enabled BOOLEAN NOT NULL DEFAULT FALSE,
+				frontend_url TEXT NOT NULL,
+				bearer_token TEXT NOT NULL,
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);`,
 			`CREATE TABLE IF NOT EXISTS device_events (

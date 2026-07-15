@@ -118,6 +118,9 @@ Anchor reads application and bootstrap settings from environment variables:
 | `ANCHOR_ADMIN_PASSWORD` | `anchor` | Bootstrap administrator password |
 | `ANCHOR_FOTA_DOWNLOAD_BASE_URL` | relative URLs | Public URL prefix used in FOTA download links |
 | `ANCHOR_GRYPE_PATH` | `grype` from `PATH` | Grype executable used for CVE scans |
+| `ANCHOR_COAP_ENABLED` | unset/disabled | Enable the CoAP frontend integration |
+| `ANCHOR_COAP_FRONTEND_URL` | unset | Private HTTP base URL of `coap-frontend` |
+| `COAP_INTERNAL_BEARER_TOKEN` | unset | Shared private bearer token for Anchor/frontend |
 
 MQTT connection settings are stored in Anchor and managed from **Integrations**, not through environment variables.
 

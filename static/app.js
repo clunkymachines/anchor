@@ -265,6 +265,41 @@ function handleDeviceSelectionChange(event) {
   return false;
 }
 
+// Device protocol configuration
+
+function updateDeviceProtocolConfiguration(root = document) {
+  const modelSelect = root.querySelector("[data-device-model-select]");
+  if (!modelSelect) {
+    return;
+  }
+
+  const protocol = (modelSelect.selectedOptions[0]?.dataset.protocol || "").toLowerCase();
+  const panels = all("[data-device-protocol-config]", root);
+  const supported = panels.some((panel) => panel.dataset.deviceProtocolConfig === protocol);
+
+  panels.forEach((panel) => {
+    const active = panel.dataset.deviceProtocolConfig === protocol;
+    panel.hidden = !active;
+    panel.classList.toggle("is-hidden", !active);
+    all("input, select, textarea", panel).forEach((input) => {
+      input.disabled = !active;
+    });
+  });
+
+  const prompt = root.querySelector("[data-device-protocol-prompt]");
+  if (prompt) {
+    prompt.hidden = protocol !== "";
+  }
+  const unsupported = root.querySelector("[data-device-protocol-unsupported]");
+  if (unsupported) {
+    unsupported.hidden = protocol === "" || supported;
+  }
+  const submit = root.querySelector("[data-device-create-submit]");
+  if (submit) {
+    submit.disabled = !supported;
+  }
+}
+
 // HTMX swaps
 
 function rememberTelemetryTabBeforeSwap(event) {
@@ -326,11 +361,17 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-document.addEventListener("change", handleDeviceSelectionChange);
+document.addEventListener("change", (event) => {
+  handleDeviceSelectionChange(event);
+  if (closestEventTarget(event, "[data-device-model-select]")) {
+    updateDeviceProtocolConfiguration();
+  }
+});
 
 document.addEventListener("DOMContentLoaded", () => {
   formatLocalTimes();
   updateDeviceSelectionState();
+  updateDeviceProtocolConfiguration();
 
   const eventStreams = startEventStreams();
   window.addEventListener("beforeunload", () => {

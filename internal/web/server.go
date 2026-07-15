@@ -20,9 +20,12 @@ import (
 	"strings"
 	"time"
 
+	"anchor/internal/coapapi"
+	"anchor/internal/coapcontrol"
 	"anchor/internal/cve"
 	"anchor/internal/db"
 	"anchor/internal/domain"
+	"anchor/internal/taskdispatch"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -55,6 +58,10 @@ type Server struct {
 	cveScanWorker          CVEScanWorker
 	releaseStorageDir      string
 	fotaDownloadBaseURL    string
+	coAPInternalToken      string
+	coAPIntegrationEnabled bool
+	coAPIntegrationRuntime CoAPIntegrationRuntime
+	coAPInvalidator        CoAPCredentialInvalidator
 }
 
 // ServerConfig supplies the optional integrations and storage settings used by
@@ -64,8 +71,13 @@ type ServerConfig struct {
 	InternalMQTTClientAuth InternalMQTTClientAuthConfig
 	MQTTIntegrationRuntime MQTTIntegrationRuntime
 	TaskPublisher          DeviceTaskPublisher
+	CoAPTaskPublisher      DeviceTaskPublisher
 	ReleaseStorageDir      string
 	FOTADownloadBaseURL    string
+	CoAPInternalToken      string
+	CoAPIntegrationEnabled bool
+	CoAPIntegrationRuntime CoAPIntegrationRuntime
+	CoAPInvalidator        CoAPCredentialInvalidator
 	CVEScanWorkerEnabled   bool
 	CVEScannerPath         string
 	CVEScanWorker          CVEScanWorker
@@ -96,6 +108,24 @@ type CVEScanWorker interface {
 	Notify()
 }
 
+// CoAPIntegrationRuntime probes the private frontend without exposing its
+// bearer token to browser requests.
+type CoAPIntegrationRuntime interface {
+	IntegrationStatus(context.Context) domain.CoAPIntegrationStatus
+}
+
+type CoAPAssociationRuntime interface {
+	Association(context.Context, string) (coapapi.AssociationStatus, error)
+}
+
+type CoAPConfigRuntime interface {
+	ApplyCoAPIntegration(context.Context, domain.CoAPIntegrationConfig) error
+}
+
+type CoAPCredentialInvalidator interface {
+	Invalidate(context.Context, string, int64, bool) error
+}
+
 type loginPageData struct {
 	Error string
 	Email string
@@ -119,6 +149,15 @@ type integrationsPageData struct {
 	MQTTConnectionReason      string
 	MQTTConnectionUpdatedAt   string
 	PasswordConfigured        bool
+	CoAP                      domain.CoAPIntegrationConfig
+	CoAPFormError             string
+	CoAPMessage               string
+	CoAPStatus                string
+	CoAPStatusClass           string
+	CoAPFrontendStatus        string
+	CoAPFrontendStatusClass   string
+	CoAPFrontendReason        string
+	CoAPTokenConfigured       bool
 }
 
 type devicesPageData struct {
@@ -164,16 +203,36 @@ type campaignDetailPageData struct {
 }
 
 type deviceCreatePageData struct {
-	Shell          shellPageData
-	DeviceModels   []deviceModelOptionView
-	MQTTFormError  string
-	DeviceFormNote string
+	Shell           shellPageData
+	DeviceModels    []deviceModelOptionView
+	FormError       string
+	DeviceFormNote  string
+	DeviceID        string
+	MQTTUsername    string
+	CoAPPSKIdentity string
+	IsGateway       bool
+}
+
+type deviceCreatedPageData struct {
+	Shell       shellPageData
+	DeviceID    string
+	ModelName   string
+	PSKIdentity string
+	PSKHex      string
+}
+
+type coAPCredentialCreatedPageData struct {
+	Shell       shellPageData
+	DeviceID    string
+	PSKIdentity string
+	PSKHex      string
 }
 
 type deviceDetailPageData struct {
 	Shell                shellPageData
 	Device               deviceDetailView
 	MQTTCredential       *mqttCredentialView
+	CoAPCredential       *coAPCredentialView
 	TwinProperties       []twinPropertyView
 	RecentEvents         []deviceEventView
 	ActiveAndRecentTasks []deviceTaskView
@@ -289,6 +348,8 @@ type deviceDetailView struct {
 	OrganisationID      int64
 	DeviceModelID       int64
 	ModelName           string
+	ExpectedProtocol    string
+	ProtocolLabel       string
 	SoftwareVersions    string
 	FirmwareVersion     string
 	CVEStatus           cveStatusView
@@ -306,6 +367,14 @@ type deviceDetailView struct {
 type mqttCredentialView struct {
 	Username string
 	Enabled  bool
+}
+
+type coAPCredentialView struct {
+	PSKIdentity string
+	Revision    int64
+	Enabled     bool
+	Association string
+	CID         string
 }
 
 type twinPropertyView struct {
@@ -465,6 +534,7 @@ type deviceModelOptionView struct {
 	ExpectedHeartbeatSeconds int64
 	ExpectedProtocol         string
 	ExpectedReleaseLabel     string
+	Selected                 bool
 }
 
 type deviceModelView struct {
@@ -519,9 +589,31 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 		cveScanWorker:          config.CVEScanWorker,
 		releaseStorageDir:      config.ReleaseStorageDir,
 		fotaDownloadBaseURL:    strings.TrimRight(strings.TrimSpace(config.FOTADownloadBaseURL), "/"),
+		coAPInternalToken:      config.CoAPInternalToken,
+		coAPIntegrationEnabled: config.CoAPIntegrationEnabled,
+		coAPInvalidator:        config.CoAPInvalidator,
 	}
 	if server.taskPublisher == nil && server.mqttIntegrationRuntime != nil {
 		server.taskPublisher = server.mqttIntegrationRuntime
+	}
+	if config.CoAPTaskPublisher != nil && server.taskPublisher != nil {
+		server.taskPublisher = taskdispatch.New(store, server.taskPublisher, config.CoAPTaskPublisher)
+	}
+	if saved, err := store.CoAPIntegration(context.Background()); err == nil {
+		if server.coAPInternalToken == "" {
+			server.coAPInternalToken = saved.BearerToken
+		}
+		if !config.CoAPIntegrationEnabled {
+			server.coAPIntegrationEnabled = saved.Enabled
+		}
+		if config.CoAPIntegrationRuntime == nil && saved.Enabled {
+			if runtime, err := coapcontrol.New(coapcontrol.Config{BaseURL: saved.FrontendURL, BearerToken: saved.BearerToken}); err == nil {
+				server.coAPIntegrationRuntime = runtime
+			}
+		}
+	}
+	if config.CoAPIntegrationRuntime != nil {
+		server.coAPIntegrationRuntime = config.CoAPIntegrationRuntime
 	}
 	if server.releaseStorageDir == "" {
 		server.releaseStorageDir = defaultReleaseDir
@@ -560,6 +652,8 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /devices", server.requireAuth(http.HandlerFunc(server.devicesPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTaskPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.deviceTaskCancelPost)))
+	mux.Handle("POST /devices/{deviceID}/coap/replace", server.requireAuth(http.HandlerFunc(server.deviceCoAPReplacePost)))
+	mux.Handle("POST /devices/{deviceID}/coap/toggle", server.requireAuth(http.HandlerFunc(server.deviceCoAPTogglePost)))
 	mux.Handle("POST /devices/delete", server.requireAuth(http.HandlerFunc(server.deviceDeletePost)))
 	mux.Handle("GET /campaigns", server.requireAuth(http.HandlerFunc(server.campaigns)))
 	mux.Handle("POST /campaigns/new", server.requireAuth(http.HandlerFunc(server.campaignNewPost)))
@@ -593,9 +687,17 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("GET /integrations", server.requireAuth(http.HandlerFunc(server.integrations)))
 	mux.Handle("GET /integrations/mqtt/status", server.requireAuth(http.HandlerFunc(server.mqttIntegrationStatus)))
 	mux.Handle("POST /integrations/mqtt", server.requireAuth(http.HandlerFunc(server.mqttIntegrationPost)))
+	mux.Handle("POST /integrations/coap", server.requireAuth(http.HandlerFunc(server.coAPIntegrationPost)))
+	mux.Handle("GET /integrations/coap/status", server.requireAuth(http.HandlerFunc(server.coAPIntegrationStatus)))
 	mux.HandleFunc("GET /invitations/{token}", server.invitationSignup)
 	mux.HandleFunc("POST /invitations/{token}", server.invitationSignupPost)
 	mux.Handle("POST /api/v1/devices/bulk-upsert", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceBulkUpsert)))
+	mux.Handle("POST /internal/coap/v1/credentials/resolve", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPResolveCredentials)))
+	mux.Handle("POST /internal/coap/v1/devices/{deviceID}/activity", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPActivity)))
+	mux.Handle("POST /internal/coap/v1/devices/{deviceID}/telemetry", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPTelemetry)))
+	mux.Handle("POST /internal/coap/v1/devices/{deviceID}/tasks/{taskID}/operations", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPOperation)))
+	mux.Handle("PUT /internal/coap/v1/devices/{deviceID}/tasks/{taskID}/status", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPTaskStatus)))
+	mux.Handle("GET /internal/coap/v1/devices/{deviceID}/tasks/pending", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPPendingTask)))
 	mux.HandleFunc("POST /mqtt/auth", server.mqttAuth)
 	mux.HandleFunc("POST /mqtt/superuser", server.mqttSuperuser)
 	mux.HandleFunc("POST /mqtt/acl", server.mqttACL)
@@ -721,6 +823,9 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		communication := []string{}
 		if row.HasMQTTCredential {
 			communication = append(communication, "MQTT")
+		}
+		if row.HasCoAPCredential {
+			communication = append(communication, "CoAP over DTLS")
 		}
 		if row.Device.IsGateway {
 			communication = append(communication, "Gateway")
@@ -991,11 +1096,9 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceID := r.FormValue("device_id")
-	username := r.FormValue("mqtt_username")
-	password := r.FormValue("mqtt_password")
-	if deviceID == "" || username == "" || password == "" {
-		s.renderDeviceNewWithError(w, r, "Device ID, model, MQTT username, and password are required.")
+	deviceID := strings.TrimSpace(r.FormValue("device_id"))
+	if deviceID == "" {
+		s.renderDeviceNewWithError(w, r, "Device ID and model are required.")
 		return
 	}
 
@@ -1013,7 +1116,8 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 		s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "Choose a device model.")
 		return
 	}
-	if _, err := s.store.DeviceModel(r.Context(), deviceModelID, organisationID); errors.Is(err, db.ErrNotFound) {
+	model, err := s.store.DeviceModel(r.Context(), deviceModelID, organisationID)
+	if errors.Is(err, db.ErrNotFound) {
 		s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "Choose a device model from this organisation.")
 		return
 	} else if err != nil {
@@ -1021,32 +1125,158 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, "credential error", http.StatusInternalServerError)
-		return
+	device := domain.Device{
+		ID:               deviceID,
+		OrganisationID:   organisationID,
+		DeviceModelID:    deviceModelID,
+		SoftwareVersions: domain.SoftwareVersions{},
 	}
 
-	if err := s.store.SaveDeviceWithMQTTCredential(r.Context(), domain.DeviceWithMQTTCredential{
-		Device: domain.Device{
-			ID:               deviceID,
-			OrganisationID:   organisationID,
-			DeviceModelID:    deviceModelID,
-			SoftwareVersions: domain.SoftwareVersions{},
-			IsGateway:        r.FormValue("is_gateway") == "on",
-		},
-		Credential: domain.DeviceMQTTCredential{
-			DeviceID:     deviceID,
-			Username:     username,
-			PasswordHash: string(passwordHash),
-			Enabled:      true,
-		},
-	}); err != nil {
-		http.Error(w, "device with mqtt credential error", http.StatusInternalServerError)
+	switch strings.ToLower(strings.TrimSpace(model.ExpectedProtocol)) {
+	case "mqtt":
+		username := strings.TrimSpace(r.FormValue("mqtt_username"))
+		password := r.FormValue("mqtt_password")
+		if username == "" || password == "" {
+			s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "MQTT username and password are required for this model.")
+			return
+		}
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "credential error", http.StatusInternalServerError)
+			return
+		}
+		device.IsGateway = r.FormValue("is_gateway") == "on"
+		if err := s.store.SaveDeviceWithMQTTCredential(r.Context(), domain.DeviceWithMQTTCredential{
+			Device: device,
+			Credential: domain.DeviceMQTTCredential{
+				DeviceID:     deviceID,
+				Username:     username,
+				PasswordHash: string(passwordHash),
+				Enabled:      true,
+			},
+		}); err != nil {
+			http.Error(w, "device with mqtt credential error", http.StatusInternalServerError)
+			return
+		}
+	case "coap":
+		var psk []byte
+		pskHex := strings.TrimSpace(r.FormValue("coap_psk"))
+		if pskHex != "" {
+			psk, err = hex.DecodeString(pskHex)
+			if err != nil || len(psk) < 16 || len(psk) > 64 {
+				s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "CoAP PSK must decode to 16 to 64 bytes (32 to 128 hexadecimal characters).")
+				return
+			}
+		}
+		credential, err := s.store.SaveDeviceWithCoAPCredential(r.Context(), domain.DeviceWithCoAPCredential{
+			Device: device,
+			Credential: domain.CoAPCredential{
+				DeviceID:    deviceID,
+				PSKIdentity: strings.TrimSpace(r.FormValue("coap_psk_identity")),
+				PSK:         psk,
+				Enabled:     true,
+			},
+		})
+		if err != nil {
+			s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "Could not create the CoAP credential. Check that its identity is valid and unique.")
+			return
+		}
+		s.renderDeviceCreated(w, deviceCreatedPageData{
+			Shell:       shell,
+			DeviceID:    deviceID,
+			ModelName:   model.Name,
+			PSKIdentity: credential.PSKIdentity,
+			PSKHex:      hex.EncodeToString(credential.PSK),
+		})
+		return
+	default:
+		s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "The selected model uses a protocol that device creation does not support yet.")
 		return
 	}
 
 	http.Redirect(w, r, "/devices?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) deviceCoAPReplacePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	deviceID := r.PathValue("deviceID")
+	summary, err := s.store.LoadCoAPCredentialSummary(r.Context(), deviceID, organisationID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	identity := strings.TrimSpace(r.FormValue("coap_psk_identity"))
+	if identity == "" {
+		identity = summary.PSKIdentity
+	}
+	var psk []byte
+	if encoded := strings.TrimSpace(r.FormValue("coap_psk")); encoded != "" {
+		psk, err = hex.DecodeString(encoded)
+		if err != nil || len(psk) < 16 || len(psk) > 64 {
+			http.Error(w, "CoAP PSK must be 32 to 128 hexadecimal characters", http.StatusBadRequest)
+			return
+		}
+	} else {
+		psk, err = domain.GenerateCoAPPSK()
+		if err != nil {
+			http.Error(w, "credential generation failed", http.StatusInternalServerError)
+			return
+		}
+	}
+	replaced, err := s.store.ReplaceCoAPCredential(r.Context(), domain.CoAPCredential{DeviceID: deviceID, PSKIdentity: identity, PSK: psk, Enabled: summary.Enabled}, organisationID)
+	if err != nil {
+		http.Error(w, "could not replace CoAP credential", http.StatusBadRequest)
+		return
+	}
+	if s.coAPInvalidator != nil {
+		_ = s.coAPInvalidator.Invalidate(r.Context(), deviceID, replaced.Revision, false)
+	}
+	if err := s.render(w, http.StatusOK, coAPCredentialCreatedPageData{Shell: shell, DeviceID: deviceID, PSKIdentity: replaced.PSKIdentity, PSKHex: hex.EncodeToString(replaced.PSK)}, "coap_credential_created"); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) deviceCoAPTogglePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	deviceID := r.PathValue("deviceID")
+	summary, err := s.store.LoadCoAPCredentialSummary(r.Context(), deviceID, organisationID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.store.EnableCoAPCredential(r.Context(), deviceID, organisationID, !summary.Enabled); err != nil {
+		http.Error(w, "could not update CoAP credential", http.StatusInternalServerError)
+		return
+	}
+	updated, err := s.store.LoadCoAPCredentialSummary(r.Context(), deviceID, organisationID)
+	if err == nil && s.coAPInvalidator != nil {
+		_ = s.coAPInvalidator.Invalidate(r.Context(), deviceID, updated.Revision, !updated.Enabled)
+	}
+	http.Redirect(w, r, "/devices/"+url.PathEscape(deviceID)+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
 
 func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
@@ -1073,6 +1303,13 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 
 	taskType := r.FormValue("task_type")
 	parametersJSON, err := s.taskParametersFromForm(r, taskType, organisationID)
+	if err == nil {
+		if protocol, protocolErr := s.store.DeviceExpectedProtocol(r.Context(), deviceID, organisationID); protocolErr != nil {
+			err = protocolErr
+		} else if protocol == "coap" {
+			err = validateCoAPTaskParameters(taskType, parametersJSON)
+		}
+	}
 	if err != nil {
 		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, err.Error())
 		return
@@ -1133,6 +1370,32 @@ func (s *Server) taskParametersFromForm(r *http.Request, taskType string, organi
 	default:
 		return "", nil
 	}
+}
+
+func validateCoAPTaskParameters(taskType, parametersJSON string) error {
+	switch taskType {
+	case domain.TaskTypeRead:
+		var params domain.ReadTaskParameters
+		if err := json.Unmarshal([]byte(parametersJSON), &params); err != nil {
+			return err
+		}
+		for _, path := range params.Paths {
+			if err := domain.ValidateCoAPResourcePath(path); err != nil {
+				return err
+			}
+		}
+	case domain.TaskTypeWrite:
+		var params domain.WriteTaskParameters
+		if err := json.Unmarshal([]byte(parametersJSON), &params); err != nil {
+			return err
+		}
+		for _, value := range params.Values {
+			if err := domain.ValidateCoAPResourcePath(value.Path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func readTaskPathsFromForm(input string) []string {
@@ -2250,6 +2513,19 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 	deviceIDs := r.Form["device_id"]
 	taskType := r.FormValue("task_type")
 	parametersJSON, err := s.taskParametersFromForm(r, taskType, organisationID)
+	if err == nil && (taskType == domain.TaskTypeRead || taskType == domain.TaskTypeWrite) {
+		for _, deviceID := range deviceIDs {
+			protocol, protocolErr := s.store.DeviceExpectedProtocol(r.Context(), deviceID, organisationID)
+			if protocolErr != nil {
+				err = protocolErr
+				break
+			}
+			if protocol == "coap" {
+				err = validateCoAPTaskParameters(taskType, parametersJSON)
+				break
+			}
+		}
+	}
 	if err == nil && taskType == domain.TaskTypeFOTA {
 		err = s.validateCampaignFOTASelection(r.Context(), organisationID, deviceIDs, r.FormValue("release_id"))
 	}
@@ -2878,6 +3154,15 @@ func (s *Server) renderDeviceNewForOrganisationWithError(w http.ResponseWriter, 
 		http.Error(w, "device model query error", http.StatusInternalServerError)
 		return
 	}
+	data.DeviceID = strings.TrimSpace(r.FormValue("device_id"))
+	data.MQTTUsername = strings.TrimSpace(r.FormValue("mqtt_username"))
+	data.CoAPPSKIdentity = strings.TrimSpace(r.FormValue("coap_psk_identity"))
+	data.IsGateway = r.FormValue("is_gateway") == "on"
+	if selectedModelID, err := strconv.ParseInt(r.FormValue("device_model_id"), 10, 64); err == nil {
+		for index := range data.DeviceModels {
+			data.DeviceModels[index].Selected = data.DeviceModels[index].ID == selectedModelID
+		}
+	}
 
 	s.renderDeviceNew(w, data)
 }
@@ -2956,6 +3241,12 @@ func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, data devi
 
 func (s *Server) renderDeviceNew(w http.ResponseWriter, data deviceCreatePageData) {
 	if err := s.render(w, http.StatusOK, data, "device_new.html"); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderDeviceCreated(w http.ResponseWriter, data deviceCreatedPageData) {
+	if err := s.render(w, http.StatusCreated, data, "device_created.html"); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
@@ -3176,7 +3467,7 @@ func (s *Server) loadDeviceCreatePageData(ctx context.Context, shell shellPageDa
 	return deviceCreatePageData{
 		Shell:          shell,
 		DeviceModels:   modelOptions,
-		MQTTFormError:  formError,
+		FormError:      formError,
 		DeviceFormNote: note,
 	}, nil
 }
@@ -3345,6 +3636,11 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 		return deviceDetailPageData{}, err
 	}
 
+	expectedProtocol := strings.ToLower(strings.TrimSpace(detail.Device.ExpectedProtocol))
+	protocolLabel := strings.ToUpper(expectedProtocol)
+	if expectedProtocol == "coap" {
+		protocolLabel = "CoAP over DTLS"
+	}
 	data := deviceDetailPageData{
 		Shell: shell,
 		Device: deviceDetailView{
@@ -3352,6 +3648,8 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 			OrganisationID:      detail.Device.OrganisationID,
 			DeviceModelID:       detail.Device.DeviceModelID,
 			ModelName:           detail.Device.ModelName,
+			ExpectedProtocol:    expectedProtocol,
+			ProtocolLabel:       protocolLabel,
 			SoftwareVersions:    formatSoftwareVersions(detail.Device.SoftwareVersions),
 			FirmwareVersion:     firmwareVersion(detail.Device.SoftwareVersions),
 			CVEStatus:           cveStatusViewFor(cveStatus),
@@ -3376,6 +3674,27 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 		data.MQTTCredential = &mqttCredentialView{
 			Username: detail.MQTTCredential.Username,
 			Enabled:  detail.MQTTCredential.Enabled,
+		}
+	}
+	if detail.CoAPCredential != nil {
+		data.CoAPCredential = &coAPCredentialView{
+			PSKIdentity: detail.CoAPCredential.PSKIdentity,
+			Revision:    detail.CoAPCredential.Revision,
+			Enabled:     detail.CoAPCredential.Enabled,
+			Association: "Unknown",
+			CID:         "Unknown",
+		}
+		if runtime, ok := s.coAPIntegrationRuntime.(CoAPAssociationRuntime); ok {
+			if association, associationErr := runtime.Association(ctx, deviceID); associationErr == nil {
+				data.CoAPCredential.Association = "Inactive"
+				if association.Connected {
+					data.CoAPCredential.Association = "Connected"
+				}
+				data.CoAPCredential.CID = "No"
+				if association.CIDNegotiated {
+					data.CoAPCredential.CID = "Yes"
+				}
+			}
 		}
 	}
 
@@ -4140,7 +4459,11 @@ type deviceConnectivityView struct {
 }
 
 func deviceConnectivity(device domain.Device, now time.Time) deviceConnectivityView {
-	if device.LastEventReceivedMS == 0 {
+	lastSeenMS := device.LastSeenMS
+	if lastSeenMS == 0 {
+		lastSeenMS = device.LastEventReceivedMS
+	}
+	if lastSeenMS == 0 {
 		return deviceConnectivityView{
 			Status:      "Disconnected",
 			StatusClass: "status-danger",
@@ -4148,20 +4471,20 @@ func deviceConnectivity(device domain.Device, now time.Time) deviceConnectivityV
 		}
 	}
 
-	lastSeenAt := time.UnixMilli(device.LastEventReceivedMS)
+	lastSeenAt := time.UnixMilli(lastSeenMS)
 	connected := now.Sub(lastSeenAt) <= time.Duration(device.ExpectedHeartbeatSeconds)*time.Second
 	if connected {
 		return deviceConnectivityView{
 			Connected:   true,
 			Status:      "Connected",
 			StatusClass: "status-success",
-			LastSeen:    formatUnixMS(device.LastEventReceivedMS),
+			LastSeen:    formatUnixMS(lastSeenMS),
 		}
 	}
 	return deviceConnectivityView{
 		Status:      "Disconnected",
 		StatusClass: "status-danger",
-		LastSeen:    formatUnixMS(device.LastEventReceivedMS),
+		LastSeen:    formatUnixMS(lastSeenMS),
 	}
 }
 

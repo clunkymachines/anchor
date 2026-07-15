@@ -109,6 +109,67 @@ type MQTTIntegrationStatus struct {
 	UpdatedAt string
 }
 
+// CoAPCredential contains the PSK and is only returned by the immediate
+// create/replace operation that generated or imported it.
+type CoAPCredential struct {
+	DeviceID       string
+	OrganisationID int64
+	PSKIdentity    string
+	PSK            []byte
+	Revision       int64
+	Enabled        bool
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+// CoAPCredentialSummary is safe to use in general device views.
+type CoAPCredentialSummary struct {
+	DeviceID    string
+	PSKIdentity string
+	Revision    int64
+	Enabled     bool
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+type CoAPResolvedCredential struct {
+	CoAPCredential
+	ExpectedHeartbeatSeconds int64
+	ExpectedProtocol         string
+}
+
+type CoAPIntegrationConfig struct {
+	Enabled     bool
+	FrontendURL string
+	BearerToken string
+	Configured  bool
+	UpdatedAt   string
+}
+
+const (
+	CoAPIntegrationDisabled    = "disabled"
+	CoAPIntegrationHealthy     = "healthy"
+	CoAPIntegrationDegraded    = "degraded"
+	CoAPIntegrationUnreachable = "unreachable"
+)
+
+type CoAPIntegrationStatus struct {
+	State              string
+	Reason             string
+	ActiveAssociations int
+	UpdatedAt          string
+}
+
+type CoAPAssociationStatus struct {
+	DeviceID           string
+	Connected          bool
+	Generation         uint64
+	CredentialRevision int64
+	CIDNegotiated      bool
+	PeerAddress        string
+	LastActivityMS     int64
+}
+
 type Device struct {
 	// ID is the stable device identifier.
 	ID string
@@ -120,7 +181,11 @@ type Device struct {
 	ModelName string
 	// ExpectedHeartbeatSeconds is copied from the linked model for connectivity checks.
 	ExpectedHeartbeatSeconds int64
-	// LastEventReceivedMS is the latest received device event timestamp in Unix milliseconds.
+	// ExpectedProtocol is copied from the linked model for protocol-specific behavior.
+	ExpectedProtocol string
+	// LastSeenMS is the latest protocol activity timestamp in Unix milliseconds.
+	LastSeenMS int64
+	// LastEventReceivedMS is retained as a source-compatible alias for older callers.
 	LastEventReceivedMS int64
 	// SoftwareVersions contains reported component versions.
 	SoftwareVersions SoftwareVersions
@@ -167,6 +232,13 @@ type DeviceWithMQTTCredential struct {
 	Credential DeviceMQTTCredential
 }
 
+type DeviceWithCoAPCredential struct {
+	// Device is the device being configured.
+	Device Device
+	// Credential is the CoAP PSK credential for the device.
+	Credential CoAPCredential
+}
+
 type DeviceWithMQTT struct {
 	// Device is the configured device.
 	Device Device
@@ -179,6 +251,8 @@ type DeviceListRow struct {
 	Device Device
 	// HasMQTTCredential records whether a credential exists without exposing auth material.
 	HasMQTTCredential bool
+	// HasCoAPCredential records whether a PSK credential exists without exposing auth material.
+	HasCoAPCredential bool
 	// CVEStatus is the denormalized status for the device's matched firmware release.
 	CVEStatus CVEImpactStatus
 }
@@ -188,6 +262,7 @@ type DeviceDetail struct {
 	Device Device
 	// MQTTCredential is the device MQTT credential, when present.
 	MQTTCredential *DeviceMQTTCredential
+	CoAPCredential *CoAPCredentialSummary
 }
 
 type DeviceEvent struct {

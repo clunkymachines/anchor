@@ -23,17 +23,20 @@
 								{{if .DeviceFormNote}}
 									<p class="form-error">{{.DeviceFormNote}}</p>
 								{{end}}
+								{{if .FormError}}
+									<p class="form-error">{{.FormError}}</p>
+								{{end}}
 								<div class="form-grid">
 									<label class="field">
 										<span class="field-label">Device ID</span>
-										<input class="input" name="device_id" placeholder="device-001" required>
+										<input class="input" name="device_id" value="{{.DeviceID}}" placeholder="device-001" required>
 									</label>
 									<label class="field">
 										<span class="field-label">Model</span>
-										<select class="input" name="device_model_id" required>
+										<select class="input" name="device_model_id" required data-device-model-select>
 											<option value="">Choose a model</option>
 											{{range .DeviceModels}}
-												<option value="{{.ID}}">{{.Name}} - {{.ExpectedProtocol}} - {{.ExpectedHeartbeatSeconds}}s{{if .ExpectedReleaseLabel}} - {{.ExpectedReleaseLabel}}{{end}}</option>
+												<option value="{{.ID}}" data-protocol="{{.ExpectedProtocol}}" {{if .Selected}}selected{{end}}>{{.Name}} - {{.ExpectedProtocol}} - {{.ExpectedHeartbeatSeconds}}s{{if .ExpectedReleaseLabel}} - {{.ExpectedReleaseLabel}}{{end}}</option>
 											{{end}}
 										</select>
 									</label>
@@ -45,34 +48,28 @@
 							<header class="card-header">
 								<div>
 									<h2 class="card-title">Communication</h2>
+									<p class="card-subtitle">Configuration follows the selected model protocol</p>
 								</div>
 							</header>
 							<div class="card-body">
-								<div class="tabs" aria-label="Communication type">
-									<a class="tab-item is-active" href="#mqtt">MQTT</a>
-									<span class="tab-item is-disabled">CoAP</span>
-									<span class="tab-item is-disabled">LwM2M</span>
-									<span class="tab-item is-disabled">BLE</span>
-								</div>
+								<p class="topic-preview" data-device-protocol-prompt>Select a model to configure its communication credentials.</p>
 
-								<section class="tab-panel" id="mqtt">
-									{{if .MQTTFormError}}
-										<p class="form-error">{{.MQTTFormError}}</p>
-									{{end}}
+								<section class="tab-panel is-hidden" data-device-protocol-config="mqtt" hidden>
+									<div><span class="protocol-pill">MQTT</span></div>
 									<div class="form-grid">
 										<label class="field">
 											<span class="field-label">MQTT username</span>
-											<input class="input" name="mqtt_username" placeholder="device-001" required>
+											<input class="input" name="mqtt_username" value="{{.MQTTUsername}}" placeholder="device-001" required disabled>
 										</label>
 										<label class="field">
 											<span class="field-label">MQTT password</span>
 											<span class="password-input">
-												<input class="input" id="mqtt_password" name="mqtt_password" type="password" autocomplete="new-password" required>
+												<input class="input" id="mqtt_password" name="mqtt_password" type="password" autocomplete="new-password" required disabled>
 												{{template "password_toggle" .}}
 											</span>
 										</label>
 										<label class="checkbox-field field-wide">
-											<input type="checkbox" name="is_gateway">
+											<input type="checkbox" name="is_gateway" {{if .IsGateway}}checked{{end}}>
 											<span>
 												<span class="field-label">Gateway</span>
 												<span class="field-help">May publish data for other devices in this organisation.</span>
@@ -94,12 +91,33 @@
 										</section>
 									</div>
 								</section>
+
+								<section class="tab-panel is-hidden" data-device-protocol-config="coap" hidden>
+									<div><span class="protocol-pill">CoAP over DTLS</span></div>
+									<div class="form-grid">
+										<label class="field">
+											<span class="field-label">PSK identity</span>
+											<input class="input" name="coap_psk_identity" value="{{.CoAPPSKIdentity}}" placeholder="Defaults to the device ID" maxlength="128" disabled>
+											<span class="field-help">Case-sensitive identity presented during the DTLS handshake.</span>
+										</label>
+										<label class="field">
+											<span class="field-label">Pre-shared key (hexadecimal)</span>
+											<span class="password-input">
+												<input class="input" name="coap_psk" type="password" autocomplete="new-password" placeholder="Generate automatically" disabled>
+												{{template "password_toggle" .}}
+											</span>
+											<span class="field-help">Leave blank to generate a 16-byte (128-bit) key. Imported keys may contain 32–128 hexadecimal characters (16–64 bytes).</span>
+										</label>
+									</div>
+								</section>
+
+								<p class="form-error" data-device-protocol-unsupported hidden>This model's protocol is not supported by device creation yet.</p>
 							</div>
 						</section>
 
 						<div class="form-actions">
 							<a class="button button-ghost" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Cancel</a>
-							<button class="button button-primary" type="submit">Create device</button>
+							<button class="button button-primary" type="submit" data-device-create-submit disabled>Create device</button>
 						</div>
 					</form>
 				</main>

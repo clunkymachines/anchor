@@ -14,6 +14,12 @@ import (
 	"anchor/internal/domain"
 )
 
+type recordingCoAPIntegrationRuntime struct{ status domain.CoAPIntegrationStatus }
+
+func (r recordingCoAPIntegrationRuntime) IntegrationStatus(context.Context) domain.CoAPIntegrationStatus {
+	return r.status
+}
+
 type recordingMQTTIntegrationRuntime struct {
 	applied []domain.MQTTIntegrationConfig
 	status  domain.MQTTIntegrationStatus
@@ -125,6 +131,14 @@ func TestAnchorAdminCanConfigureMQTTIntegration(t *testing.T) {
 	if !strings.Contains(body, "MQTT with Mosquitto") || !strings.Contains(body, "Integrations") {
 		t.Fatalf("expected integrations content, got %q", body)
 	}
+	mqttCard := body[strings.Index(body, "MQTT with Mosquitto"):]
+	statusIndex := strings.Index(mqttCard, `id="mqtt-integration-status"`)
+	activeIndex := strings.Index(mqttCard, `<label class="switch-field">`)
+	configIndex := strings.Index(mqttCard, `name="broker_url"`)
+	endpointsIndex := strings.Index(mqttCard, `<h3 class="section-title">Mosquitto HTTP callbacks</h3>`)
+	if statusIndex < 0 || activeIndex < 0 || configIndex < 0 || endpointsIndex < 0 || !(statusIndex < activeIndex && activeIndex < configIndex && configIndex < endpointsIndex) {
+		t.Fatalf("expected MQTT card order status, active, configuration, endpoints; got %q", mqttCard)
+	}
 	if strings.Contains(body, "secret") {
 		t.Fatal("expected saved password not to be rendered")
 	}
@@ -217,6 +231,139 @@ func TestMQTTIntegrationStatusShowsBrokerFailureReason(t *testing.T) {
 	for _, expected := range []string{"Connection failed", "connection refused", "mqtt-integration-status"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected status response to contain %q, got %q", expected, body)
+		}
+	}
+}
+
+func TestAnchorAdminCanConfigureCoAPIntegration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{Dialect: db.DialectSQLite, DSN: filepath.Join(t.TempDir(), "anchor.db")})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	admin := domain.User{Email: "admin@example.com", Name: "Admin", PasswordHash: "hash", IsAdmin: true}
+	admin.ID, err = store.CreateUser(ctx, admin)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	organisationID, err := store.CreateOrganisationForUser(ctx, domain.Organisation{Name: "Test Org"}, admin.ID)
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+
+	server := testServerWithTemplates(t, store)
+	values := url.Values{"enabled": {"1"}, "frontend_url": {"http://127.0.0.1:8081"}, "bearer_token": {"coap-secret"}}
+	req := formRequest(http.MethodPost, "/integrations/coap?organisation_id="+strconv.FormatInt(organisationID, 10), values, admin)
+	res := httptest.NewRecorder()
+	server.coAPIntegrationPost(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after CoAP save, got %d body=%q", res.Code, res.Body.String())
+	}
+
+	config, err := store.CoAPIntegration(ctx)
+	if err != nil {
+		t.Fatalf("load CoAP integration: %v", err)
+	}
+	if !config.Enabled || config.FrontendURL != "http://127.0.0.1:8081" || config.BearerToken != "coap-secret" {
+		t.Fatalf("unexpected CoAP integration: %#v", config)
+	}
+
+	values.Set("frontend_url", "http://127.0.0.1:8082")
+	values.Set("enabled", "")
+	values.Set("bearer_token", "")
+	req = formRequest(http.MethodPost, "/integrations/coap?organisation_id="+strconv.FormatInt(organisationID, 10), values, admin)
+	res = httptest.NewRecorder()
+	server.coAPIntegrationPost(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after CoAP disable, got %d body=%q", res.Code, res.Body.String())
+	}
+	config, err = store.CoAPIntegration(ctx)
+	if err != nil {
+		t.Fatalf("reload CoAP integration: %v", err)
+	}
+	if config.Enabled || config.BearerToken != "coap-secret" {
+		t.Fatalf("expected disable with retained token, got %#v", config)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/integrations", nil).WithContext(context.WithValue(context.Background(), userContextKey, admin))
+	getRes := httptest.NewRecorder()
+	server.integrations(getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("expected integrations page, got %d", getRes.Code)
+	}
+	body := getRes.Body.String()
+	if !strings.Contains(body, "CoAP / DTLS frontend") || !strings.Contains(body, "http://127.0.0.1:8082") {
+		t.Fatalf("expected CoAP card in integrations page, got %q", body)
+	}
+	coAPCard := body[strings.Index(body, "CoAP / DTLS frontend"):]
+	statusIndex := strings.Index(coAPCard, `id="coap-integration-status"`)
+	activeIndex := strings.Index(coAPCard, `<label class="switch-field">`)
+	configIndex := strings.Index(coAPCard, `name="frontend_url"`)
+	endpointsIndex := strings.Index(coAPCard, `<h3 class="section-title">Internal API</h3>`)
+	if statusIndex < 0 || activeIndex < 0 || configIndex < 0 || endpointsIndex < 0 || !(statusIndex < activeIndex && activeIndex < configIndex && configIndex < endpointsIndex) {
+		t.Fatalf("expected CoAP card order status, active, configuration, endpoints; got %q", coAPCard)
+	}
+	if strings.Contains(body, "coap-secret") {
+		t.Fatal("expected bearer token not to be rendered")
+	}
+}
+
+func TestCoAPIntegrationRejectsInvalidFrontendURL(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{Dialect: db.DialectSQLite, DSN: filepath.Join(t.TempDir(), "anchor.db")})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+	admin := domain.User{Email: "admin@example.com", Name: "Admin", PasswordHash: "hash", IsAdmin: true}
+	admin.ID, err = store.CreateUser(ctx, admin)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if _, err = store.CreateOrganisationForUser(ctx, domain.Organisation{Name: "Test Org"}, admin.ID); err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	server := testServerWithTemplates(t, store)
+	req := formRequest(http.MethodPost, "/integrations/coap", url.Values{"enabled": {"1"}, "frontend_url": {"https://frontend.example.com/path?x=1"}, "bearer_token": {"secret"}}, admin)
+	res := httptest.NewRecorder()
+	server.coAPIntegrationPost(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "absolute HTTP URL") {
+		t.Fatalf("expected CoAP URL validation error, got %d body=%q", res.Code, res.Body.String())
+	}
+}
+
+func TestCoAPIntegrationStatusProbesFrontendRuntime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{Dialect: db.DialectSQLite, DSN: filepath.Join(t.TempDir(), "anchor.db")})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+	admin := domain.User{Email: "admin@example.com", Name: "Admin", PasswordHash: "hash", IsAdmin: true}
+	admin.ID, err = store.CreateUser(ctx, admin)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := store.SaveCoAPIntegration(ctx, domain.CoAPIntegrationConfig{Enabled: true, FrontendURL: "http://127.0.0.1:8081", BearerToken: "secret"}); err != nil {
+		t.Fatalf("save CoAP integration: %v", err)
+	}
+	server := testServerWithTemplates(t, store)
+	server.coAPIntegrationRuntime = recordingCoAPIntegrationRuntime{status: domain.CoAPIntegrationStatus{State: domain.CoAPIntegrationHealthy, Reason: "Frontend is responding.", ActiveAssociations: 3, UpdatedAt: "2026-07-15T12:00:00Z"}}
+	req := httptest.NewRequest(http.MethodGet, "/integrations/coap/status", nil).WithContext(context.WithValue(ctx, userContextKey, admin))
+	res := httptest.NewRecorder()
+	server.coAPIntegrationStatus(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected status response, got %d body=%q", res.Code, res.Body.String())
+	}
+	for _, expected := range []string{"Healthy", "Frontend is responding.", "coap-integration-status"} {
+		if !strings.Contains(res.Body.String(), expected) {
+			t.Fatalf("expected %q in status response, got %q", expected, res.Body.String())
 		}
 	}
 }

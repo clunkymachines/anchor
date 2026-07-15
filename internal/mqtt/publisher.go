@@ -35,6 +35,13 @@ func (c *Client) PublishDeviceTask(ctx context.Context, task domain.DeviceTask, 
 
 // PublishPendingDeviceTasks republishes pending tasks for a device that is ready to receive them.
 func (c *Client) PublishPendingDeviceTasks(ctx context.Context, deviceID string, organisationID int64) error {
+	protocol, err := c.store.DeviceExpectedProtocol(ctx, deviceID, organisationID)
+	if err != nil {
+		return err
+	}
+	if protocol != "mqtt" {
+		return nil
+	}
 	tasks, err := c.store.ListPendingDeviceTasks(ctx, deviceID, organisationID)
 	if err != nil {
 		return err

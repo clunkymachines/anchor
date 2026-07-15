@@ -1,0 +1,36 @@
+{{template "app_page_start" (dict "Title" "Device created - Anchor" "Shell" .Shell "Active" "devices" "OrganisationAction" "/devices/new" "SearchPlaceholder" "Search devices" "DeviceBadge" "" "ReleaseBadge" "")}}
+				<main class="app-workspace">
+					<header class="page-header">
+						<div>
+							<h1 class="page-title">Device created</h1>
+							<p class="page-subtitle">{{.DeviceID}} is registered with the {{.ModelName}} model.</p>
+						</div>
+					</header>
+
+					<section class="card form-card">
+						<header class="card-header">
+							<div>
+								<h2 class="card-title">CoAP credentials</h2>
+								<p class="card-subtitle">Copy this pre-shared key now. Anchor will not show it again.</p>
+							</div>
+						</header>
+						<div class="card-body">
+							<div class="form-grid">
+								<label class="field">
+									<span class="field-label">PSK identity</span>
+									<input class="input value-mono" value="{{.PSKIdentity}}" readonly>
+								</label>
+								<label class="field">
+									<span class="field-label">Pre-shared key (hexadecimal)</span>
+									<input class="input value-mono" value="{{.PSKHex}}" readonly>
+								</label>
+							</div>
+						</div>
+					</section>
+
+					<div class="form-actions">
+						<a class="button button-secondary" href="/devices/new?organisation_id={{.Shell.SelectedOrganisationID}}">Create another device</a>
+						<a class="button button-primary" href="/devices/{{.DeviceID}}?organisation_id={{.Shell.SelectedOrganisationID}}">View device</a>
+					</div>
+				</main>
+{{template "app_page_end" .}}

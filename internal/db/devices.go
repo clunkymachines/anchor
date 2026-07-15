@@ -12,14 +12,9 @@ import (
 func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
-			COALESCE(last_event.last_received_ms, 0), d.software_versions, d.is_gateway
+			d.last_seen_ms, d.software_versions, d.is_gateway
 		FROM devices d
 		JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
-		LEFT JOIN (
-			SELECT device_id, MAX(ts_received_ms) AS last_received_ms
-			FROM device_events
-			GROUP BY device_id
-		) last_event ON last_event.device_id = d.id
 		ORDER BY m.name, d.id
 	`)
 	if err != nil {
@@ -39,13 +34,14 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 			&device.DeviceModelID,
 			&device.ModelName,
 			&device.ExpectedHeartbeatSeconds,
-			&device.LastEventReceivedMS,
+			&device.LastSeenMS,
 			&versions,
 			&device.IsGateway,
 		); err != nil {
 			return nil, err
 		}
 		device.SoftwareVersions = domain.SoftwareVersions(versions)
+		device.LastEventReceivedMS = device.LastSeenMS
 		devices = append(devices, device)
 	}
 	if err := rows.Err(); err != nil {
@@ -58,14 +54,9 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 func (s *Store) ListDevicesWithMQTT(ctx context.Context, organisationID int64) ([]domain.DeviceWithMQTT, error) {
 	query := `
 		SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
-			COALESCE(last_event.last_received_ms, 0), d.software_versions, d.is_gateway, mc.username, mc.enabled
+			d.last_seen_ms, d.software_versions, d.is_gateway, mc.username, mc.enabled
 		FROM devices d
 		JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
-		LEFT JOIN (
-			SELECT device_id, MAX(ts_received_ms) AS last_received_ms
-			FROM device_events
-			GROUP BY device_id
-		) last_event ON last_event.device_id = d.id
 		LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
 		WHERE d.organisation_id = ?
 		ORDER BY m.name, d.id
@@ -74,14 +65,9 @@ func (s *Store) ListDevicesWithMQTT(ctx context.Context, organisationID int64) (
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
 			SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
-				COALESCE(last_event.last_received_ms, 0), d.software_versions, d.is_gateway, mc.username, mc.enabled
+				d.last_seen_ms, d.software_versions, d.is_gateway, mc.username, mc.enabled
 			FROM devices d
 			JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
-			LEFT JOIN (
-				SELECT device_id, MAX(ts_received_ms) AS last_received_ms
-				FROM device_events
-				GROUP BY device_id
-			) last_event ON last_event.device_id = d.id
 			LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
 			WHERE d.organisation_id = $1
 			ORDER BY m.name, d.id
@@ -108,7 +94,7 @@ func (s *Store) ListDevicesWithMQTT(ctx context.Context, organisationID int64) (
 			&device.DeviceModelID,
 			&device.ModelName,
 			&device.ExpectedHeartbeatSeconds,
-			&device.LastEventReceivedMS,
+			&device.LastSeenMS,
 			&versions,
 			&device.IsGateway,
 			&username,
@@ -117,6 +103,7 @@ func (s *Store) ListDevicesWithMQTT(ctx context.Context, organisationID int64) (
 			return nil, err
 		}
 		device.SoftwareVersions = domain.SoftwareVersions(versions)
+		device.LastEventReceivedMS = device.LastSeenMS
 
 		deviceWithMQTT := domain.DeviceWithMQTT{Device: device}
 		if username.Valid {
@@ -144,30 +131,20 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 	)
 
 	query := `
-		SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
-			COALESCE(last_event.last_received_ms, 0), d.software_versions, d.is_gateway, mc.username, mc.enabled
+		SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
+			d.last_seen_ms, d.software_versions, d.is_gateway, mc.username, mc.enabled
 		FROM devices d
 		JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
-		LEFT JOIN (
-			SELECT device_id, MAX(ts_received_ms) AS last_received_ms
-			FROM device_events
-			GROUP BY device_id
-		) last_event ON last_event.device_id = d.id
 		LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
 		WHERE d.id = ? AND d.organisation_id = ?
 	`
 	args := []any{deviceID, organisationID}
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
-			SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
-				COALESCE(last_event.last_received_ms, 0), d.software_versions, d.is_gateway, mc.username, mc.enabled
+			SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
+				d.last_seen_ms, d.software_versions, d.is_gateway, mc.username, mc.enabled
 			FROM devices d
 			JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
-			LEFT JOIN (
-				SELECT device_id, MAX(ts_received_ms) AS last_received_ms
-				FROM device_events
-				GROUP BY device_id
-			) last_event ON last_event.device_id = d.id
 			LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
 			WHERE d.id = $1 AND d.organisation_id = $2
 		`
@@ -179,7 +156,8 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 		&device.DeviceModelID,
 		&device.ModelName,
 		&device.ExpectedHeartbeatSeconds,
-		&device.LastEventReceivedMS,
+		&device.ExpectedProtocol,
+		&device.LastSeenMS,
 		&versions,
 		&device.IsGateway,
 		&username,
@@ -192,6 +170,7 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 		return domain.DeviceDetail{}, err
 	}
 	device.SoftwareVersions = domain.SoftwareVersions(versions)
+	device.LastEventReceivedMS = device.LastSeenMS
 
 	detail := domain.DeviceDetail{Device: device}
 	if username.Valid {
@@ -200,6 +179,12 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 			Username: username.String,
 			Enabled:  enabled.Bool,
 		}
+	}
+	coAPCredential, err := s.LoadCoAPCredentialSummary(ctx, deviceID, organisationID)
+	if err == nil {
+		detail.CoAPCredential = &coAPCredential
+	} else if !errors.Is(err, ErrNotFound) {
+		return domain.DeviceDetail{}, err
 	}
 
 	return detail, nil
@@ -313,6 +298,20 @@ func (s *Store) DeviceOrganisationID(ctx context.Context, deviceID string) (int6
 		return 0, ErrNotFound
 	}
 	return organisationID, err
+}
+
+func (s *Store) DeviceExpectedProtocol(ctx context.Context, deviceID string, organisationID int64) (string, error) {
+	query := `SELECT m.expected_protocol FROM devices d JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id WHERE d.id = ? AND d.organisation_id = ?`
+	args := []any{deviceID, organisationID}
+	if s.isPostgres() {
+		query = `SELECT m.expected_protocol FROM devices d JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id WHERE d.id = $1 AND d.organisation_id = $2`
+	}
+	var protocol string
+	err := s.readDB.QueryRowContext(ctx, query, args...).Scan(&protocol)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return protocol, err
 }
 
 func (s *Store) upsertDevice(ctx context.Context, tx txRunner, device domain.Device) error {
