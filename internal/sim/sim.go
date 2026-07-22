@@ -55,6 +55,7 @@ type Config struct {
 	APIToken           string
 	MQTTBrokerURL      string
 	DeviceModelID      int64
+	OrganisationID     int64
 	FleetSize          int
 	DevicePrefix       string
 	StartIndex         int
@@ -117,8 +118,6 @@ type provisioningResult struct {
 	ID           string `json:"id"`
 	Status       string `json:"status"`
 	MQTTUsername string `json:"mqtt_username"`
-	DataTopic    string `json:"data_topic"`
-	TaskTopic    string `json:"task_topic"`
 	Error        *struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
@@ -200,6 +199,9 @@ func (cfg Config) Validate() error {
 	if cfg.DeviceModelID <= 0 {
 		return errors.New("device model ID is required")
 	}
+	if cfg.OrganisationID <= 0 {
+		return errors.New("organisation ID is required")
+	}
 	if cfg.FleetSize <= 0 {
 		return errors.New("fleet size must be positive")
 	}
@@ -224,11 +226,14 @@ func GenerateFleet(cfg Config) []DeviceDefinition {
 		index := cfg.StartIndex + i
 		id := cfg.DevicePrefix + strconv.Itoa(index)
 		devices = append(devices, DeviceDefinition{
-			ID:            id,
-			MQTTUsername:  cfg.MQTTUsernamePrefix + strconv.Itoa(index),
-			MQTTPassword:  DeterministicPassword(cfg.Secret, id),
-			Firmware:      cfg.FirmwareVersion,
-			DeviceModelID: cfg.DeviceModelID,
+			ID:             id,
+			MQTTUsername:   cfg.MQTTUsernamePrefix + strconv.Itoa(index),
+			MQTTPassword:   DeterministicPassword(cfg.Secret, id),
+			Firmware:       cfg.FirmwareVersion,
+			DeviceModelID:  cfg.DeviceModelID,
+			OrganisationID: cfg.OrganisationID,
+			DataTopic:      "dev/" + strconv.FormatInt(cfg.OrganisationID, 10) + "/" + id + "/data",
+			TaskTopic:      "dev/" + strconv.FormatInt(cfg.OrganisationID, 10) + "/" + id + "/task",
 		})
 	}
 	return devices
@@ -338,10 +343,7 @@ func (r *Runtime) provision(ctx context.Context) error {
 			}
 			continue
 		}
-		device.def.DataTopic = result.DataTopic
-		device.def.TaskTopic = result.TaskTopic
 		device.def.MQTTUsername = result.MQTTUsername
-		device.def.OrganisationID = organisationIDFromDataTopic(result.DataTopic)
 		kept = append(kept, device)
 	}
 	r.devices = kept
@@ -763,15 +765,6 @@ func stableHash(value string) uint64 {
 	sum := sha256.Sum256([]byte(value))
 	return uint64(sum[0])<<56 | uint64(sum[1])<<48 | uint64(sum[2])<<40 | uint64(sum[3])<<32 |
 		uint64(sum[4])<<24 | uint64(sum[5])<<16 | uint64(sum[6])<<8 | uint64(sum[7])
-}
-
-func organisationIDFromDataTopic(topic string) int64 {
-	parts := strings.Split(topic, "/")
-	if len(parts) != 4 {
-		return 0
-	}
-	id, _ := strconv.ParseInt(parts[1], 10, 64)
-	return id
 }
 
 // SupportedWritePaths returns the writable simulator property paths in sorted order.

@@ -218,6 +218,18 @@
 											<p class="empty-state-text">This device does not have a CoAP PSK credential.</p>
 										</div>
 									{{end}}
+								{{else if eq .Device.ExpectedProtocol "api"}}
+									<div><span class="protocol-pill">API</span></div>
+									<div class="protocol-sections">
+										<section>
+											<h3 class="section-title">Application-backend relay</h3>
+											<p class="topic-preview">A trusted application backend sends telemetry and task status, and polls for work with the organisation Bearer credential.</p>
+										</section>
+										<section>
+											<h3 class="section-title">Check-in path</h3>
+											<p class="topic-preview value-mono">/api/v1/devices/{{.Device.ID}}/check-in</p>
+										</section>
+									</div>
 								{{else}}
 									<div class="empty-state">
 										<h3 class="empty-state-title">{{.Device.ProtocolLabel}} details are unavailable</h3>

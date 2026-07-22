@@ -116,7 +116,7 @@ Anchor reads application and bootstrap settings from environment variables:
 | `ANCHOR_ADMIN_EMAIL` | `admin@anchor.local` | Bootstrap administrator email |
 | `ANCHOR_ADMIN_NAME` | `Anchor Admin` | Bootstrap administrator display name |
 | `ANCHOR_ADMIN_PASSWORD` | `anchor` | Bootstrap administrator password |
-| `ANCHOR_FOTA_DOWNLOAD_BASE_URL` | relative URLs | Public URL prefix used in FOTA download links |
+| `ANCHOR_FOTA_DOWNLOAD_BASE_URL` | none | Absolute public HTTP(S) URL used in relayed API and CoAP FOTA tasks |
 | `ANCHOR_GRYPE_PATH` | `grype` from `PATH` | Grype executable used for CVE scans |
 | `ANCHOR_COAP_ENABLED` | unset/disabled | Enable the CoAP frontend integration |
 | `ANCHOR_COAP_FRONTEND_URL` | unset | Private HTTP base URL of `coap-frontend` |
@@ -141,6 +141,7 @@ The status refreshes automatically. Common causes of failure include an unreacha
 ## Further Documentation
 
 - [MQTT protocol and Mosquitto setup](MQTT.md)
+- [Application-backend device API](API-DEVICE.md)
 - [Fleet simulator](SIMULATOR.md)
 - [Contributing](CONTRIBUTING.md)
 - [License](LICENSE)

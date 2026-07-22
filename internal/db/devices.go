@@ -203,11 +203,46 @@ func (s *Store) SaveDeviceWithMQTTCredential(ctx context.Context, cfg domain.Dev
 	if err := s.upsertMQTTCredential(ctx, tx, cfg.Credential); err != nil {
 		return err
 	}
+	if err := deleteDeviceCredentialTx(ctx, tx, s.dialect, "coap_credentials", cfg.Device.ID); err != nil {
+		return err
+	}
 	if err := s.refreshDeviceSearchTextTx(ctx, tx, cfg.Device.OrganisationID, cfg.Device.ID); err != nil {
 		return err
 	}
 
 	return tx.Commit()
+}
+
+// SaveDevice writes a credential-free device and removes transport credentials.
+func (s *Store) SaveDevice(ctx context.Context, device domain.Device) error {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.upsertDevice(ctx, tx, device); err != nil {
+		return err
+	}
+	if err := deleteDeviceCredentialTx(ctx, tx, s.dialect, "mqtt_credentials", device.ID); err != nil {
+		return err
+	}
+	if err := deleteDeviceCredentialTx(ctx, tx, s.dialect, "coap_credentials", device.ID); err != nil {
+		return err
+	}
+	if err := s.refreshDeviceSearchTextTx(ctx, tx, device.OrganisationID, device.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func deleteDeviceCredentialTx(ctx context.Context, tx txRunner, dialect Dialect, table, deviceID string) error {
+	// table is selected only by internal callers above.
+	query := "DELETE FROM " + table + " WHERE device_id = ?"
+	if dialect == DialectPostgres || dialect == DialectPostgreSQL {
+		query = "DELETE FROM " + table + " WHERE device_id = $1"
+	}
+	_, err := tx.ExecContext(ctx, query, deviceID)
+	return err
 }
 
 func (s *Store) DeleteDevice(ctx context.Context, deviceID string, organisationID int64) error {

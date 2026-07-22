@@ -31,6 +31,8 @@ func (d *Dispatcher) PublishDeviceTask(ctx context.Context, task domain.DeviceTa
 		return err
 	}
 	switch protocol {
+	case "api":
+		return nil
 	case "mqtt":
 		if d.mqtt == nil {
 			return errors.New("MQTT transport is unavailable")
@@ -52,6 +54,8 @@ func (d *Dispatcher) PublishPendingDeviceTasks(ctx context.Context, deviceID str
 	}
 	var transport Transport
 	switch protocol {
+	case "api":
+		return nil
 	case "mqtt":
 		transport = d.mqtt
 	case "coap":

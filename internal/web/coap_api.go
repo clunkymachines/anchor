@@ -4,7 +4,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	"anchor/internal/coapcontrol"
 	"anchor/internal/db"
 	"anchor/internal/domain"
+	"anchor/internal/telemetry"
 	"github.com/fxamacker/cbor/v2"
 )
 
@@ -108,67 +108,7 @@ func decodeCoAPCBOR(payload []byte) (any, error) {
 	return normalizeCoAPValue(value), nil
 }
 func normalizeCoAPValue(value any) any {
-	switch v := value.(type) {
-	case map[any]any:
-		m := make(map[string]any, len(v))
-		for k, child := range v {
-			m[fmt.Sprint(k)] = normalizeCoAPValue(child)
-		}
-		return m
-	case map[string]any:
-		m := make(map[string]any, len(v))
-		for k, child := range v {
-			m[k] = normalizeCoAPValue(child)
-		}
-		return m
-	case []any:
-		for i := range v {
-			v[i] = normalizeCoAPValue(v[i])
-		}
-		return v
-	case uint64:
-		return int64(v)
-	case uint32:
-		return int64(v)
-	case uint16:
-		return int64(v)
-	case uint8:
-		return int64(v)
-	default:
-		return value
-	}
-}
-func flattenCoAP(value any, path string, out *[]domain.DeviceTwinProperty, deviceID string, event *int64, ts int64, source string) {
-	if object, ok := value.(map[string]any); ok {
-		for key, child := range object {
-			p := key
-			if path != "" {
-				p = path + "." + key
-			}
-			flattenCoAP(child, p, out, deviceID, event, ts, source)
-		}
-		return
-	}
-	if path == "" {
-		path = "value"
-	}
-	encoded, _ := json.Marshal(value)
-	valueType := "object"
-	switch value.(type) {
-	case nil:
-		valueType = "null"
-	case bool:
-		valueType = "bool"
-	case string:
-		valueType = "string"
-	case []byte:
-		valueType = "bytes"
-	case []any:
-		valueType = "array"
-	case int64, float64:
-		valueType = "number"
-	}
-	*out = append(*out, domain.DeviceTwinProperty{DeviceID: deviceID, Path: path, ValueJSON: string(encoded), ValueType: valueType, SourceEventID: event, TSObservedMS: ts, TSReceivedMS: ts, Protocol: "coap", SourcePath: source})
+	return telemetry.Normalize(value)
 }
 
 func (s *Server) coAPTelemetry(w http.ResponseWriter, r *http.Request) {
@@ -204,8 +144,15 @@ func (s *Server) coAPTelemetry(w http.ResponseWriter, r *http.Request) {
 	}
 	payloadJSON, _ := json.Marshal(value)
 	event := domain.DeviceEvent{DeviceID: deviceID, TSReceivedMS: ts, Protocol: "coap", Direction: "inbound", Operation: "post", CoAPPath: req.Path, Method: req.Method, ContentFormat: req.ContentFormat, PayloadRaw: req.Payload, PayloadJSON: string(payloadJSON), CorrelationID: req.CorrelationID, Source: "coap"}
-	properties := []domain.DeviceTwinProperty{}
-	flattenCoAP(value, "", &properties, deviceID, nil, ts, req.Path)
+	flat, err := telemetry.Flatten(value)
+	if err != nil {
+		// Keep CoAP's prior public behavior: store the raw event when flattening fails.
+		flat = nil
+	}
+	properties := make([]domain.DeviceTwinProperty, 0, len(flat))
+	for _, update := range flat {
+		properties = append(properties, domain.DeviceTwinProperty{DeviceID: deviceID, Path: update.Path, ValueJSON: update.ValueJSON, ValueType: update.ValueType, TSObservedMS: ts, TSReceivedMS: ts, Protocol: "coap", SourcePath: req.Path})
+	}
 	if _, err := s.store.RecordDeviceEvent(r.Context(), event, properties); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "telemetry_error", "Could not record telemetry.")
 		return

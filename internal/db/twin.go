@@ -30,7 +30,7 @@ func (s *Store) InsertDeviceEvent(ctx context.Context, event domain.DeviceEvent)
 }
 
 func (s *Store) UpsertDeviceTwinProperty(ctx context.Context, property domain.DeviceTwinProperty) error {
-	if err := upsertDeviceTwinProperty(ctx, s.writeDB, s.dialect, property); err != nil {
+	if _, err := upsertDeviceTwinProperty(ctx, s.writeDB, s.dialect, property); err != nil {
 		return err
 	}
 	s.events.publish(property.DeviceID)
@@ -73,10 +73,11 @@ func (s *Store) RecordDeviceEvent(ctx context.Context, event domain.DeviceEvent,
 				property.SourcePath = event.CoAPPath
 			}
 		}
-		if err := upsertDeviceTwinProperty(ctx, tx, s.dialect, property); err != nil {
+		changed, err := upsertDeviceTwinProperty(ctx, tx, s.dialect, property)
+		if err != nil {
 			return 0, err
 		}
-		if firmwareVersion, ok := firmwareVersionFromTelemetryProperty(property); ok {
+		if firmwareVersion, ok := firmwareVersionFromTelemetryProperty(property); changed && ok {
 			if err := updateDeviceFirmwareVersion(ctx, tx, s.dialect, event.DeviceID, firmwareVersion); err != nil {
 				return 0, err
 			}
@@ -124,7 +125,7 @@ func (s *Store) RecordCoAPOperation(ctx context.Context, request domain.DeviceEv
 			if property.SourcePath == "" {
 				property.SourcePath = response.CoAPPath
 			}
-			if err := upsertDeviceTwinProperty(ctx, tx, s.dialect, *property); err != nil {
+			if _, err := upsertDeviceTwinProperty(ctx, tx, s.dialect, *property); err != nil {
 				return err
 			}
 		}
@@ -335,12 +336,12 @@ func insertDeviceEvent(ctx context.Context, runner queryRunner, dialect Dialect,
 	}
 }
 
-func upsertDeviceTwinProperty(ctx context.Context, runner queryRunner, dialect Dialect, property domain.DeviceTwinProperty) error {
+func upsertDeviceTwinProperty(ctx context.Context, runner queryRunner, dialect Dialect, property domain.DeviceTwinProperty) (bool, error) {
 	sourceEventID := nullableSourceEventID(property.SourceEventID)
 
 	switch dialect {
 	case DialectSQLite:
-		_, err := runner.ExecContext(ctx,
+		result, err := runner.ExecContext(ctx,
 			`INSERT INTO device_twin_properties (
 				device_id, path, value_json, value_type, source_event_id, ts_observed_ms,
 				ts_received_ms, protocol, source_path
@@ -352,7 +353,8 @@ func upsertDeviceTwinProperty(ctx context.Context, runner queryRunner, dialect D
 				ts_observed_ms = excluded.ts_observed_ms,
 				ts_received_ms = excluded.ts_received_ms,
 				protocol = excluded.protocol,
-				source_path = excluded.source_path`,
+				source_path = excluded.source_path
+			WHERE excluded.ts_observed_ms >= device_twin_properties.ts_observed_ms`,
 			property.DeviceID,
 			property.Path,
 			property.ValueJSON,
@@ -363,9 +365,13 @@ func upsertDeviceTwinProperty(ctx context.Context, runner queryRunner, dialect D
 			property.Protocol,
 			property.SourcePath,
 		)
-		return err
+		if err != nil {
+			return false, err
+		}
+		rows, err := result.RowsAffected()
+		return rows > 0, err
 	case DialectPostgres, DialectPostgreSQL:
-		_, err := runner.ExecContext(ctx,
+		result, err := runner.ExecContext(ctx,
 			`INSERT INTO device_twin_properties (
 				device_id, path, value_json, value_type, source_event_id, ts_observed_ms,
 				ts_received_ms, protocol, source_path
@@ -377,7 +383,8 @@ func upsertDeviceTwinProperty(ctx context.Context, runner queryRunner, dialect D
 				ts_observed_ms = excluded.ts_observed_ms,
 				ts_received_ms = excluded.ts_received_ms,
 				protocol = excluded.protocol,
-				source_path = excluded.source_path`,
+				source_path = excluded.source_path
+			WHERE excluded.ts_observed_ms >= device_twin_properties.ts_observed_ms`,
 			property.DeviceID,
 			property.Path,
 			property.ValueJSON,
@@ -388,9 +395,13 @@ func upsertDeviceTwinProperty(ctx context.Context, runner queryRunner, dialect D
 			property.Protocol,
 			property.SourcePath,
 		)
-		return err
+		if err != nil {
+			return false, err
+		}
+		rows, err := result.RowsAffected()
+		return rows > 0, err
 	default:
-		return fmt.Errorf("unsupported db dialect %q", dialect)
+		return false, fmt.Errorf("unsupported db dialect %q", dialect)
 	}
 }
 

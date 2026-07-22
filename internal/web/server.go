@@ -692,6 +692,7 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.HandleFunc("GET /invitations/{token}", server.invitationSignup)
 	mux.HandleFunc("POST /invitations/{token}", server.invitationSignupPost)
 	mux.Handle("POST /api/v1/devices/bulk-upsert", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceBulkUpsert)))
+	mux.Handle("POST /api/v1/devices/{deviceID}/check-in", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceCheckIn)))
 	mux.Handle("POST /internal/coap/v1/credentials/resolve", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPResolveCredentials)))
 	mux.Handle("POST /internal/coap/v1/devices/{deviceID}/activity", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPActivity)))
 	mux.Handle("POST /internal/coap/v1/devices/{deviceID}/telemetry", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPTelemetry)))
@@ -821,6 +822,9 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, row := range devicePage.Rows {
 		communication := []string{}
+		if strings.EqualFold(strings.TrimSpace(row.Device.ExpectedProtocol), "api") {
+			communication = append(communication, "API")
+		}
 		if row.HasMQTTCredential {
 			communication = append(communication, "MQTT")
 		}
@@ -1189,6 +1193,15 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 			PSKHex:      hex.EncodeToString(credential.PSK),
 		})
 		return
+	case "api":
+		if strings.TrimSpace(r.FormValue("mqtt_username")) != "" || r.FormValue("mqtt_password") != "" || strings.TrimSpace(r.FormValue("coap_psk_identity")) != "" || strings.TrimSpace(r.FormValue("coap_psk")) != "" || r.FormValue("is_gateway") != "" {
+			s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "API devices cannot have MQTT, CoAP, or gateway settings.")
+			return
+		}
+		if err := s.store.SaveDevice(r.Context(), device); err != nil {
+			http.Error(w, "device save error", http.StatusInternalServerError)
+			return
+		}
 	default:
 		s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, "The selected model uses a protocol that device creation does not support yet.")
 		return
@@ -1593,6 +1606,11 @@ func (s *Server) deviceModelsPost(w http.ResponseWriter, r *http.Request) {
 	expectedHeartbeatSeconds, err := strconv.ParseInt(r.FormValue("expected_heartbeat_seconds"), 10, 64)
 	if name == "" || expectedProtocol == "" || expectedHeartbeatSeconds <= 0 || err != nil {
 		s.renderDeviceModelNewForOrganisationWithError(w, r, shell, organisationID, "Name, heartbeat, and protocol are required.")
+		return
+	}
+	expectedProtocol = strings.ToLower(expectedProtocol)
+	if expectedProtocol != "mqtt" && expectedProtocol != "coap" && expectedProtocol != "api" {
+		s.renderDeviceModelNewForOrganisationWithError(w, r, shell, organisationID, "Choose a supported protocol.")
 		return
 	}
 
@@ -3640,6 +3658,8 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 	protocolLabel := strings.ToUpper(expectedProtocol)
 	if expectedProtocol == "coap" {
 		protocolLabel = "CoAP over DTLS"
+	} else if expectedProtocol == "api" {
+		protocolLabel = "API"
 	}
 	data := deviceDetailPageData{
 		Shell: shell,

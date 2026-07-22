@@ -55,7 +55,7 @@ func TestAPIBulkUpsertAuthAndPartialSuccess(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(decoded.Results) != 2 || decoded.Results[0].Status != "created" || decoded.Results[0].DataTopic == "" || decoded.Results[1].Error == nil {
+	if len(decoded.Results) != 2 || decoded.Results[0].Status != "created" || decoded.Results[1].Error == nil {
 		t.Fatalf("unexpected partial response: %#v", decoded.Results)
 	}
 

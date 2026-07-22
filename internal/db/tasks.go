@@ -233,6 +233,74 @@ func (s *Store) OldestPendingCoAPTask(ctx context.Context, deviceID string, orga
 	return task, err
 }
 
+// AdvanceAndLoadPendingAPITask expires and promotes work for one API device,
+// then returns its oldest pending task. All queue changes are serialized by the
+// device row (Postgres) or the single SQLite writer transaction.
+func (s *Store) AdvanceAndLoadPendingAPITask(ctx context.Context, deviceID string, organisationID int64, now time.Time) (domain.DeviceTask, error) {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.DeviceTask{}, err
+	}
+	defer tx.Rollback()
+	if err := s.lockDeviceForTask(ctx, tx, deviceID, organisationID); err != nil {
+		return domain.DeviceTask{}, err
+	}
+
+	nowText := formatTime(now.UTC())
+	expire := `UPDATE device_tasks SET status = 'expired', completed_at = ?, status_message = 'Task expired without terminal device status.' WHERE device_id = ? AND status IN ('queued','pending','in_progress') AND expires_at <= ?`
+	if s.isPostgres() {
+		expire = numberedPlaceholders(expire)
+	}
+	expired, err := tx.ExecContext(ctx, expire, nowText, deviceID, nowText)
+	if err != nil {
+		return domain.DeviceTask{}, err
+	}
+
+	activeQuery := `SELECT COUNT(*) FROM device_tasks WHERE device_id = ? AND status IN ('pending','in_progress')`
+	if s.isPostgres() {
+		activeQuery = numberedPlaceholders(activeQuery)
+	}
+	var active int
+	if err := tx.QueryRowContext(ctx, activeQuery, deviceID).Scan(&active); err != nil {
+		return domain.DeviceTask{}, err
+	}
+	promoted := false
+	if active == 0 {
+		promote := `UPDATE device_tasks SET status = 'pending' WHERE id = (SELECT id FROM device_tasks WHERE device_id = ? AND status = 'queued' AND expires_at > ? ORDER BY created_at ASC, id ASC LIMIT 1) AND status = 'queued'`
+		if s.isPostgres() {
+			promote = numberedPlaceholders(promote)
+		}
+		result, err := tx.ExecContext(ctx, promote, deviceID, nowText)
+		if err != nil {
+			return domain.DeviceTask{}, err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return domain.DeviceTask{}, err
+		}
+		promoted = rows > 0
+	}
+
+	query := `SELECT t.id, t.device_id, t.campaign_id, t.task_type, t.parameters_json, t.status, t.status_message, t.created_at, t.expires_at, t.completed_at FROM device_tasks t JOIN devices d ON d.id=t.device_id JOIN device_models m ON m.id=d.device_model_id AND m.organisation_id=d.organisation_id WHERE t.device_id=? AND d.organisation_id=? AND t.status='pending' AND m.expected_protocol='api' ORDER BY t.created_at ASC,t.id ASC LIMIT 1`
+	if s.isPostgres() {
+		query = `SELECT t.id, t.device_id, t.campaign_id, t.task_type, t.parameters_json::text, t.status, t.status_message, t.created_at::text, t.expires_at::text, t.completed_at::text FROM device_tasks t JOIN devices d ON d.id=t.device_id JOIN device_models m ON m.id=d.device_model_id AND m.organisation_id=d.organisation_id WHERE t.device_id=$1 AND d.organisation_id=$2 AND t.status='pending' AND m.expected_protocol='api' ORDER BY t.created_at ASC,t.id ASC LIMIT 1`
+	}
+	task, scanErr := scanDeviceTask(tx.QueryRowContext(ctx, query, deviceID, organisationID))
+	if scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		return domain.DeviceTask{}, scanErr
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.DeviceTask{}, err
+	}
+	if n, _ := expired.RowsAffected(); n > 0 || promoted {
+		s.tasks.publish(deviceID)
+	}
+	if errors.Is(scanErr, sql.ErrNoRows) {
+		return domain.DeviceTask{}, ErrNotFound
+	}
+	return task, nil
+}
+
 // DeviceTaskForDevice returns one task only when both device and organisation
 // ownership match. It is used by trusted transport callbacks before recording
 // task-correlated audit events.

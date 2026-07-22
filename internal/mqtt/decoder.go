@@ -2,10 +2,9 @@ package mqtt
 
 import (
 	"encoding/json"
-	"fmt"
-	"sort"
-	"strconv"
 	"strings"
+
+	"anchor/internal/telemetry"
 
 	"github.com/fxamacker/cbor/v2"
 )
@@ -16,11 +15,7 @@ type decodedPayload struct {
 	format      string
 }
 
-type propertyUpdate struct {
-	path      string
-	valueJSON string
-	valueType string
-}
+type propertyUpdate struct{ path, valueJSON, valueType string }
 
 // decodePayload decodes a telemetry payload using content type metadata when present.
 func decodePayload(payload []byte, contentType string) (decodedPayload, error) {
@@ -80,114 +75,23 @@ func decodeCBOR(payload []byte) (decodedPayload, error) {
 
 // flattenPayload turns a decoded payload into sorted device twin property updates.
 func flattenPayload(value any) ([]propertyUpdate, error) {
-	var updates []propertyUpdate
-	flattenValue("", normalizeDecodedValue(value), &updates)
-	sort.Slice(updates, func(i, j int) bool {
-		return updates[i].path < updates[j].path
-	})
-	return updates, nil
-}
-
-// flattenValue appends leaf values from a decoded payload using dot-separated paths.
-func flattenValue(path string, value any, updates *[]propertyUpdate) {
-	if object, ok := value.(map[string]any); ok {
-		keys := make([]string, 0, len(object))
-		for key := range object {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			childPath := key
-			if path != "" {
-				childPath = path + "." + key
-			}
-			flattenValue(childPath, object[key], updates)
-		}
-		return
-	}
-
-	if path == "" {
-		path = "value"
-	}
-
-	valueJSON, err := json.Marshal(value)
+	flat, err := telemetry.Flatten(value)
 	if err != nil {
-		valueJSON = []byte("null")
+		return nil, err
 	}
-	*updates = append(*updates, propertyUpdate{
-		path:      path,
-		valueJSON: string(valueJSON),
-		valueType: valueType(value),
-	})
+	updates := make([]propertyUpdate, len(flat))
+	for i, update := range flat {
+		updates[i] = propertyUpdate{update.Path, update.ValueJSON, update.ValueType}
+	}
+	return updates, nil
 }
 
 // normalizeDecodedValue converts decoder-specific numeric and map types into stable Go values.
 func normalizeDecodedValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, value := range typed {
-			out[key] = normalizeDecodedValue(value)
-		}
-		return out
-	case map[any]any:
-		out := make(map[string]any, len(typed))
-		for key, value := range typed {
-			out[fmt.Sprint(key)] = normalizeDecodedValue(value)
-		}
-		return out
-	case []any:
-		out := make([]any, len(typed))
-		for i, value := range typed {
-			out[i] = normalizeDecodedValue(value)
-		}
-		return out
-	case []byte:
-		return typed
-	case uint64:
-		if typed <= uint64(^uint(0)>>1) {
-			return int64(typed)
-		}
-		return strconv.FormatUint(typed, 10)
-	case uint:
-		return int64(typed)
-	case uint8:
-		return int64(typed)
-	case uint16:
-		return int64(typed)
-	case uint32:
-		return int64(typed)
-	case int:
-		return int64(typed)
-	case int8:
-		return int64(typed)
-	case int16:
-		return int64(typed)
-	case int32:
-		return int64(typed)
-	default:
-		return value
-	}
+	return telemetry.Normalize(value)
 }
 
 // valueType maps a decoded value to the storage type used by device twin properties.
 func valueType(value any) string {
-	switch value.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "bool"
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-		return "number"
-	case string:
-		return "string"
-	case []byte:
-		return "bytes"
-	case []any:
-		return "array"
-	case map[string]any, map[any]any:
-		return "object"
-	default:
-		return "object"
-	}
+	return telemetry.ValueType(value)
 }

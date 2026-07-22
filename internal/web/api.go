@@ -53,8 +53,6 @@ type apiBulkUpsertDeviceResult struct {
 	Created      bool          `json:"created,omitempty"`
 	Updated      bool          `json:"updated,omitempty"`
 	MQTTUsername string        `json:"mqtt_username,omitempty"`
-	DataTopic    string        `json:"data_topic,omitempty"`
-	TaskTopic    string        `json:"task_topic,omitempty"`
 	CoAPIdentity string        `json:"coap_identity,omitempty"`
 	Error        *apiErrorBody `json:"error,omitempty"`
 }
@@ -150,15 +148,8 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 		result.Error = &apiErrorBody{Code: "device_model_required", Message: "device_model_id is required."}
 		return result
 	}
-	if req.MQTTUsername == "" {
-		result.Error = &apiErrorBody{Code: "mqtt_username_required", Message: "mqtt_username is required."}
-		return result
-	}
-	if req.MQTTPassword == "" {
-		result.Error = &apiErrorBody{Code: "mqtt_password_required", Message: "mqtt_password is required."}
-		return result
-	}
-	if _, err := s.store.DeviceModel(r.Context(), req.DeviceModelID, organisationID); errors.Is(err, db.ErrNotFound) {
+	model, err := s.store.DeviceModel(r.Context(), req.DeviceModelID, organisationID)
+	if errors.Is(err, db.ErrNotFound) {
 		result.Error = &apiErrorBody{Code: "device_model_not_found", Message: "device_model_id does not belong to this organisation."}
 		return result
 	} else if err != nil {
@@ -177,33 +168,42 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 		return result
 	}
 
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.MQTTPassword), bcrypt.DefaultCost)
-	if err != nil {
-		result.Error = &apiErrorBody{Code: "credential_error", Message: "Could not hash MQTT credential."}
-		return result
-	}
 	if req.SoftwareVersions == nil {
 		req.SoftwareVersions = domain.SoftwareVersions{}
 	}
-	if err := s.store.SaveDeviceWithMQTTCredential(r.Context(), domain.DeviceWithMQTTCredential{
-		Device: domain.Device{
-			ID:               req.ID,
-			OrganisationID:   organisationID,
-			DeviceModelID:    req.DeviceModelID,
-			SoftwareVersions: req.SoftwareVersions,
-			IsGateway:        req.IsGateway,
-		},
-		Credential: domain.DeviceMQTTCredential{
-			DeviceID:     req.ID,
-			Username:     req.MQTTUsername,
-			PasswordHash: string(passwordHash),
-			Enabled:      true,
-		},
-	}); err != nil {
-		result.Error = &apiErrorBody{Code: "device_upsert_error", Message: "Could not upsert device."}
-		return result
-	}
-	if req.CoAP != nil {
+	device := domain.Device{ID: req.ID, OrganisationID: organisationID, DeviceModelID: req.DeviceModelID, SoftwareVersions: req.SoftwareVersions, IsGateway: req.IsGateway}
+	switch strings.ToLower(strings.TrimSpace(model.ExpectedProtocol)) {
+	case "mqtt":
+		if req.MQTTUsername == "" {
+			result.Error = &apiErrorBody{Code: "mqtt_username_required", Message: "mqtt_username is required."}
+			return result
+		}
+		if req.MQTTPassword == "" {
+			result.Error = &apiErrorBody{Code: "mqtt_password_required", Message: "mqtt_password is required."}
+			return result
+		}
+		if req.CoAP != nil {
+			result.Error = &apiErrorBody{Code: "coap_credential_incompatible", Message: "coap is not valid for an MQTT model."}
+			return result
+		}
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.MQTTPassword), bcrypt.DefaultCost)
+		if err != nil {
+			result.Error = &apiErrorBody{Code: "credential_error", Message: "Could not hash MQTT credential."}
+			return result
+		}
+		if err := s.store.SaveDeviceWithMQTTCredential(r.Context(), domain.DeviceWithMQTTCredential{Device: device, Credential: domain.DeviceMQTTCredential{DeviceID: req.ID, Username: req.MQTTUsername, PasswordHash: string(passwordHash), Enabled: true}}); err != nil {
+			result.Error = &apiErrorBody{Code: "device_upsert_error", Message: "Could not upsert device."}
+			return result
+		}
+	case "coap":
+		if req.MQTTUsername != "" || req.MQTTPassword != "" {
+			result.Error = &apiErrorBody{Code: "mqtt_credential_incompatible", Message: "MQTT credentials are not valid for a CoAP model."}
+			return result
+		}
+		if req.CoAP == nil {
+			result.Error = &apiErrorBody{Code: "coap_credential_required", Message: "coap credentials are required."}
+			return result
+		}
 		psk, err := domain.DecodeCoAPPSK(req.CoAP.PSK)
 		if err != nil {
 			result.Error = &apiErrorBody{Code: "coap_psk_invalid", Message: "coap.psk must be unpadded Base64URL for 16 to 64 bytes."}
@@ -213,29 +213,36 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 		if req.CoAP.Enabled != nil {
 			enabled = *req.CoAP.Enabled
 		}
-		coapCredential := domain.CoAPCredential{DeviceID: req.ID, PSKIdentity: strings.TrimSpace(req.CoAP.PSKIdentity), PSK: psk, Enabled: enabled}
-		if _, lookupErr := s.store.LoadCoAPCredentialSummary(r.Context(), req.ID, organisationID); lookupErr == nil {
-			replaced, replaceErr := s.store.ReplaceCoAPCredential(r.Context(), coapCredential, organisationID)
-			if replaceErr != nil {
-				result.Error = &apiErrorBody{Code: "coap_credential_error", Message: "Could not replace CoAP credential."}
-				return result
-			}
-			coapCredential = replaced
-			if s.coAPInvalidator != nil {
-				_ = s.coAPInvalidator.Invalidate(r.Context(), req.ID, replaced.Revision, false)
-			}
-		} else if errors.Is(lookupErr, db.ErrNotFound) {
-			createdCredential, createErr := s.store.CreateCoAPCredential(r.Context(), coapCredential, organisationID)
-			if createErr != nil {
-				result.Error = &apiErrorBody{Code: "coap_credential_error", Message: "Could not create CoAP credential."}
-				return result
-			}
-			coapCredential = createdCredential
-		} else {
-			result.Error = &apiErrorBody{Code: "coap_credential_error", Message: "Could not load CoAP credential."}
+		coapCredential, err := s.store.SaveDeviceWithCoAPCredential(r.Context(), domain.DeviceWithCoAPCredential{Device: device, Credential: domain.CoAPCredential{DeviceID: req.ID, PSKIdentity: strings.TrimSpace(req.CoAP.PSKIdentity), PSK: psk, Enabled: enabled}})
+		if err != nil {
+			result.Error = &apiErrorBody{Code: "coap_credential_error", Message: "Could not upsert CoAP credential."}
 			return result
 		}
+		if s.coAPInvalidator != nil && !created {
+			_ = s.coAPInvalidator.Invalidate(r.Context(), req.ID, coapCredential.Revision, false)
+		}
 		result.CoAPIdentity = coapCredential.PSKIdentity
+	case "api":
+		if req.MQTTUsername != "" || req.MQTTPassword != "" {
+			result.Error = &apiErrorBody{Code: "mqtt_credential_incompatible", Message: "MQTT credentials are not valid for an API model."}
+			return result
+		}
+		if req.CoAP != nil {
+			result.Error = &apiErrorBody{Code: "coap_credential_incompatible", Message: "coap is not valid for an API model."}
+			return result
+		}
+		if req.IsGateway {
+			result.Error = &apiErrorBody{Code: "gateway_incompatible", Message: "API devices cannot be gateways."}
+			return result
+		}
+		device.IsGateway = false
+		if err := s.store.SaveDevice(r.Context(), device); err != nil {
+			result.Error = &apiErrorBody{Code: "device_upsert_error", Message: "Could not upsert device."}
+			return result
+		}
+	default:
+		result.Error = &apiErrorBody{Code: "unsupported_protocol", Message: "The device model protocol is not supported."}
+		return result
 	}
 
 	result.Status = "updated"
@@ -245,8 +252,6 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 		result.Created = true
 		result.Updated = false
 	}
-	result.DataTopic = mqttDataTopic(organisationID, req.ID)
-	result.TaskTopic = mqttTaskTopic(organisationID, req.ID)
 	return result
 }
 

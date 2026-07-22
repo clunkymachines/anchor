@@ -45,6 +45,7 @@ func configFromFlags() (sim.Config, error) {
 		apiToken           = flag.String("api-token", os.Getenv("ANCHOR_SIM_API_TOKEN"), "organisation API bearer token")
 		mqttBrokerURL      = flag.String("mqtt-url", envOrDefault("ANCHOR_SIM_MQTT_URL", "mqtt://localhost:1883"), "MQTT broker URL")
 		modelID            = flag.Int64("model-id", envInt64("ANCHOR_SIM_MODEL_ID", 0), "existing device model ID")
+		organisationID     = flag.Int64("organisation-id", envInt64("ANCHOR_SIM_ORGANISATION_ID", 0), "organisation ID")
 		fleetSize          = flag.Int("fleet-size", envInt("ANCHOR_SIM_FLEET_SIZE", sim.DefaultFleetSize), "number of devices")
 		devicePrefix       = flag.String("device-prefix", envOrDefault("ANCHOR_SIM_DEVICE_PREFIX", sim.DefaultDevicePrefix), "device ID prefix")
 		startIndex         = flag.Int("start-index", envInt("ANCHOR_SIM_START_INDEX", 1), "first device index")
@@ -67,6 +68,7 @@ func configFromFlags() (sim.Config, error) {
 		APIToken:           *apiToken,
 		MQTTBrokerURL:      *mqttBrokerURL,
 		DeviceModelID:      *modelID,
+		OrganisationID:     *organisationID,
 		FleetSize:          *fleetSize,
 		DevicePrefix:       *devicePrefix,
 		StartIndex:         *startIndex,

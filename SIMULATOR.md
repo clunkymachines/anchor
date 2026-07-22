@@ -18,12 +18,13 @@ go run ./cmd/fleet-sim \
   -anchor-url http://localhost:8080 \
   -api-token "$ANCHOR_SIM_API_TOKEN" \
   -mqtt-url mqtt://localhost:1883 \
+	-organisation-id 1 \
   -model-id 1 \
   -fleet-size 10 \
   -secret local-simulator-secret
 ```
 
-The simulator bulk-provisions the devices through `POST /api/v1/devices/bulk-upsert`, derives deterministic MQTT passwords from the supplied secret, connects the clients, and runs until interrupted.
+The simulator bulk-provisions the devices through `POST /api/v1/devices/bulk-upsert`, derives conventional MQTT topics from the configured organisation and device IDs, derives deterministic MQTT passwords from the supplied secret, connects the clients, and runs until interrupted. Set `-organisation-id` (or `ANCHOR_SIM_ORGANISATION_ID`) explicitly.
 
 Use `go run ./cmd/fleet-sim -help` for the complete flag reference. Every flag also has an `ANCHOR_SIM_*` environment-variable equivalent.
 
@@ -35,6 +36,7 @@ Use `go run ./cmd/fleet-sim -help` for the complete flag reference. Every flag a
 | `ANCHOR_SIM_API_TOKEN` | none | Organisation API bearer token |
 | `ANCHOR_SIM_MQTT_URL` | `mqtt://localhost:1883` | MQTT broker URL |
 | `ANCHOR_SIM_MODEL_ID` | `0` | Existing device model ID |
+| `ANCHOR_SIM_ORGANISATION_ID` | `0` | Organisation that owns the simulated devices |
 | `ANCHOR_SIM_FLEET_SIZE` | `1000` | Number of simulated devices; maximum `2000` |
 | `ANCHOR_SIM_DEVICE_PREFIX` | `sim-` | Device ID prefix |
 | `ANCHOR_SIM_START_INDEX` | `1` | First numeric device index |

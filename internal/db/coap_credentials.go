@@ -44,7 +44,10 @@ func (s *Store) SaveDeviceWithCoAPCredential(ctx context.Context, cfg domain.Dev
 	if err := s.upsertDevice(ctx, tx, cfg.Device); err != nil {
 		return domain.CoAPCredential{}, err
 	}
-	if err := s.insertCoAPCredential(ctx, tx, credential); err != nil {
+	if err := s.upsertCoAPCredential(ctx, tx, credential); err != nil {
+		return domain.CoAPCredential{}, err
+	}
+	if err := deleteDeviceCredentialTx(ctx, tx, s.dialect, "mqtt_credentials", cfg.Device.ID); err != nil {
 		return domain.CoAPCredential{}, err
 	}
 	if err := s.refreshDeviceSearchTextTx(ctx, tx, cfg.Device.OrganisationID, cfg.Device.ID); err != nil {
@@ -54,6 +57,15 @@ func (s *Store) SaveDeviceWithCoAPCredential(ctx context.Context, cfg domain.Dev
 		return domain.CoAPCredential{}, err
 	}
 	return s.loadCoAPCredential(ctx, credential.DeviceID, credential.PSK)
+}
+
+func (s *Store) upsertCoAPCredential(ctx context.Context, runner txRunner, credential domain.CoAPCredential) error {
+	query := `INSERT INTO coap_credentials (device_id, psk_identity, psk, revision, enabled) VALUES (?, ?, ?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET psk_identity=excluded.psk_identity, psk=excluded.psk, revision=coap_credentials.revision+1, enabled=excluded.enabled, updated_at=CURRENT_TIMESTAMP`
+	if s.isPostgres() {
+		query = `INSERT INTO coap_credentials (device_id, psk_identity, psk, revision, enabled) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(device_id) DO UPDATE SET psk_identity=excluded.psk_identity, psk=excluded.psk, revision=coap_credentials.revision+1, enabled=excluded.enabled, updated_at=NOW()`
+	}
+	_, err := runner.ExecContext(ctx, query, credential.DeviceID, credential.PSKIdentity, credential.PSK, credential.Revision, credential.Enabled)
+	return err
 }
 
 func prepareNewCoAPCredential(credential domain.CoAPCredential) (domain.CoAPCredential, error) {
