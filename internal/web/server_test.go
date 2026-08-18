@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"html/template"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -571,6 +570,69 @@ func TestDevicesPostCreatesCoAPCredentialForCoAPModel(t *testing.T) {
 	}
 	if !bytes.Equal(importedCredential.PSK, importedPSK) || !strings.Contains(res.Body.String(), importedHex) {
 		t.Fatalf("expected hexadecimal PSK to round trip, got credential=%#v body=%q", importedCredential, res.Body.String())
+	}
+}
+
+func TestDeviceSupportNotePostUpdatesDeviceDetail(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{Dialect: db.DialectSQLite, DSN: filepath.Join(t.TempDir(), "anchor.db")})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{Email: "member@example.com", Name: "Member", PasswordHash: "hash"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{UserID: userID, OrganisationID: organisationID}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	deviceID := "device-note-001"
+	if err := store.SaveDevice(ctx, domain.Device{
+		ID:               deviceID,
+		OrganisationID:   organisationID,
+		DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
+		SoftwareVersions: domain.SoftwareVersions{},
+	}); err != nil {
+		t.Fatalf("save device: %v", err)
+	}
+
+	server := testServerWithTemplates(t, store)
+	user := domain.User{ID: userID, Email: "member@example.com"}
+	req := formRequest(http.MethodPost, "/devices/"+deviceID+"/support-note", url.Values{
+		"organisation_id": {strconv.FormatInt(organisationID, 10)},
+		"support_note":    {"  Replaced battery on 22 July. <check>  "},
+	}, user)
+	req.SetPathValue("deviceID", deviceID)
+	res := httptest.NewRecorder()
+	server.deviceSupportNotePost(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after support note update, got %d body=%q", res.Code, res.Body.String())
+	}
+
+	detail, err := store.DeviceDetail(ctx, deviceID, organisationID)
+	if err != nil {
+		t.Fatalf("load device detail: %v", err)
+	}
+	if detail.Device.SupportNote != "Replaced battery on 22 July. <check>" {
+		t.Fatalf("unexpected stored support note %q", detail.Device.SupportNote)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/devices/"+deviceID+"?organisation_id="+strconv.FormatInt(organisationID, 10), nil)
+	detailReq.SetPathValue("deviceID", deviceID)
+	detailReq = detailReq.WithContext(context.WithValue(detailReq.Context(), userContextKey, user))
+	detailRes := httptest.NewRecorder()
+	server.deviceDetail(detailRes, detailReq)
+	body := detailRes.Body.String()
+	if detailRes.Code != http.StatusOK || !strings.Contains(body, "Support note") || !strings.Contains(body, "Replaced battery on 22 July. &lt;check&gt;") {
+		t.Fatalf("expected escaped support note in device detail, got %d body=%q", detailRes.Code, body)
 	}
 }
 
@@ -1711,6 +1773,44 @@ func TestReleaseDetailShowsCVEsRescansAndReplacesSBOM(t *testing.T) {
 	}
 }
 
+func TestGroupedCVEFindingsOrdersGroupsBySeverity(t *testing.T) {
+	t.Parallel()
+
+	findings := []domain.CVEScanFinding{
+		{CVEID: "CVE-LOW", Severity: "low", PackageName: "lib-low"},
+		{CVEID: "CVE-HIGH-B", Severity: "high", PackageName: "lib-high-b"},
+		{CVEID: "CVE-UNKNOWN", Severity: "unexpected", PackageName: "lib-unknown"},
+		{CVEID: "CVE-CRITICAL", Severity: "critical", PackageName: "lib-critical"},
+		{CVEID: "CVE-MEDIUM", Severity: "medium", PackageName: "lib-medium"},
+		{CVEID: "CVE-HIGH-A", Severity: "medium", PackageName: "lib-high-a"},
+		{CVEID: "CVE-HIGH-A", Severity: "high", PackageName: "lib-high-a-extra"},
+	}
+	waivers := []domain.ReleaseCVEWaiver{
+		{CVEID: "CVE-LOW", Note: "accepted"},
+		{CVEID: "CVE-CRITICAL", Note: "not reachable"},
+		{CVEID: "CVE-WAIVER-ONLY", Note: "historical"},
+	}
+
+	active, waived := groupedCVEFindings(findings, waivers)
+	assertCVEGroupOrder(t, active, []string{"CVE-HIGH-A", "CVE-HIGH-B", "CVE-MEDIUM", "CVE-UNKNOWN"})
+	assertCVEGroupOrder(t, waived, []string{"CVE-CRITICAL", "CVE-LOW", "CVE-WAIVER-ONLY"})
+	if active[0].Severity != "high" || len(active[0].Evidence) != 2 {
+		t.Fatalf("expected grouped CVE to use its highest severity and retain evidence, got %#v", active[0])
+	}
+}
+
+func assertCVEGroupOrder(t *testing.T, groups []cveGroupView, want []string) {
+	t.Helper()
+	if len(groups) != len(want) {
+		t.Fatalf("expected %d CVE groups, got %#v", len(want), groups)
+	}
+	for i, cveID := range want {
+		if groups[i].CVEID != cveID {
+			t.Fatalf("expected CVE order %v, got %#v", want, groups)
+		}
+	}
+}
+
 type recordingCVEWorker struct {
 	notifications int
 }
@@ -1722,8 +1822,7 @@ func (w *recordingCVEWorker) Notify() {
 func testServerWithTemplates(t *testing.T, store *db.Store) *Server {
 	t.Helper()
 
-	templates := template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict, "localTime": localTimeElement}).ParseGlob("../../templates/*.html"))
-	return &Server{store: store, templates: templates}
+	return &Server{store: store, templates: parseTemplates()}
 }
 
 func formRequest(method string, target string, values url.Values, user domain.User) *http.Request {

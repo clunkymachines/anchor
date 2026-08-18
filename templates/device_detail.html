@@ -76,6 +76,26 @@
 						<section class="card form-card">
 							<header class="card-header">
 								<div>
+									<h2 class="card-title">Support note</h2>
+									<p class="card-subtitle">Operational context for this device</p>
+								</div>
+							</header>
+							<form class="card-body" method="post" action="/devices/{{.Device.ID}}/support-note">
+								<input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}">
+								<label class="field" for="device-support-note">
+									<span class="field-label">Note</span>
+									<textarea class="textarea" id="device-support-note" name="support_note" maxlength="4000" rows="5" placeholder="Add installation details, troubleshooting history, or other support context…">{{.Device.SupportNote}}</textarea>
+									<span class="field-help">Visible to anyone with access to this organisation. Maximum 4,000 characters.</span>
+								</label>
+								<div class="form-actions">
+									<button class="button button-primary" type="submit">Save note</button>
+								</div>
+							</form>
+						</section>
+
+						<section class="card form-card">
+							<header class="card-header">
+								<div>
 									<h2 class="card-title">CVE status</h2>
 									<p class="card-subtitle">Matched firmware release</p>
 								</div>

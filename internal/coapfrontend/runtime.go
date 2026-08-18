@@ -22,7 +22,7 @@ import (
 	"anchor/internal/domain"
 	"github.com/fxamacker/cbor/v2"
 	piondtls "github.com/pion/dtls/v3"
-	coapdtls "github.com/plgd-dev/go-coap/v3/dtls"
+	coapdtlsserver "github.com/plgd-dev/go-coap/v3/dtls/server"
 	"github.com/plgd-dev/go-coap/v3/message"
 	"github.com/plgd-dev/go-coap/v3/message/codes"
 	"github.com/plgd-dev/go-coap/v3/message/pool"
@@ -39,6 +39,8 @@ type authenticatedDevice struct {
 	Revision       int64
 	Heartbeat      time.Duration
 	Protocol       string
+	CIDNegotiated  bool
+	CIDLength      int
 }
 type authContextKey struct{}
 
@@ -52,12 +54,27 @@ type Runtime struct {
 
 	metrics struct {
 		handshakeSuccess, handshakeFailure, requestsAccepted, requestsRejected atomic.Int64
+		cidNegotiated, cidLength, cidPacketReceived, cidPacketRouted           atomic.Int64
+		peerAddressChanged, coapRequestReceived                                atomic.Int64
 		dispatchStarted, dispatchFailed, dispatchCompleted                     atomic.Int64
 	}
 }
 
 // coapdtlsServer is the small server surface needed by Runtime.
 type coapdtlsServer struct{ stop func() }
+
+func (r *Runtime) newCoAPServer() *coapdtlsserver.Server {
+	return coapdtlsserver.New(
+		options.WithHandlerFunc(r.handleDeviceRequest),
+		options.WithOnNewConn(r.onNewConnection),
+		options.WithMaxMessageSize(uint32(r.config.MaxBodyBytes)),
+		options.WithBlockwise(true, blockwise.SZX1024, r.config.CoAPExchangeTimeout),
+		// go-coap otherwise closes every idle DTLS connection after 16 seconds.
+		// Anchor's registry sweep owns association expiry so CID sessions can
+		// survive sleeping devices and UDP tuple changes.
+		options.WithInactivityMonitor(time.Duration(0), func(*client.Conn) {}),
+	)
+}
 
 func NewRuntime(config Config, anchor AnchorClient, logger *slog.Logger) (*Runtime, error) {
 	if err := config.Validate(); err != nil {
@@ -69,7 +86,9 @@ func NewRuntime(config Config, anchor AnchorClient, logger *slog.Logger) (*Runti
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runtime{config: config, anchor: anchor, logger: logger, registry: NewRegistry(config.MaxAssociations), handshakes: make(chan struct{}, config.MaxConcurrentHandshakes)}, nil
+	runtime := &Runtime{config: config, anchor: anchor, logger: logger, registry: NewRegistry(config.MaxAssociations), handshakes: make(chan struct{}, config.MaxConcurrentHandshakes)}
+	runtime.metrics.cidLength.Store(int64(config.CIDLength))
+	return runtime, nil
 }
 
 func (r *Runtime) Registry() *Registry { return r.registry }
@@ -106,13 +125,9 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		return err
 	}
 	defer listener.Close()
+	r.logger.Info("CoAP DTLS listener started", "udp_address", listener.Addr(), "cid_length", r.config.CIDLength)
 
-	srv := coapdtls.NewServer(
-		options.WithHandlerFunc(r.handleDeviceRequest),
-		options.WithOnNewConn(r.onNewConnection),
-		options.WithMaxMessageSize(uint32(r.config.MaxBodyBytes)),
-		options.WithBlockwise(true, blockwise.SZX1024, r.config.CoAPExchangeTimeout),
-	)
+	srv := r.newCoAPServer()
 	r.server = &coapdtlsServer{stop: srv.Stop}
 	control := &http.Server{Addr: r.config.ControlListenAddr, Handler: r.ControlHandler(), ReadHeaderTimeout: 5 * time.Second}
 	controlErr := make(chan error, 1)
@@ -186,10 +201,14 @@ func (r *Runtime) onNewConnection(cc *client.Conn) {
 		return
 	}
 	device := authenticatedDevice{DeviceID: resolved.DeviceID, OrganisationID: resolved.OrganisationID, Revision: resolved.Revision, Heartbeat: time.Duration(resolved.ExpectedHeartbeatSeconds) * time.Second, Protocol: resolved.ExpectedProtocol}
-	cidNegotiated := stateHasCID(&state)
+	localCID, remoteCID, cidStateOK := stateConnectionIDs(&state)
+	cidNegotiated := cidStateOK && (len(localCID) > 0 || len(remoteCID) > 0)
+	cidLength := len(localCID)
+	device.CIDNegotiated = cidNegotiated
+	device.CIDLength = cidLength
 	connCtx, cancel := context.WithCancel(context.Background())
 	cc.SetContextValue(authContextKey{}, device)
-	if err := r.registry.Install(Association{DeviceID: device.DeviceID, CredentialRevision: device.Revision, CIDNegotiated: cidNegotiated, PeerAddress: cc.RemoteAddr(), ExpectedHeartbeat: device.Heartbeat, Cancel: cancel, Conn: cc}); err != nil {
+	if err := r.registry.Install(Association{DeviceID: device.DeviceID, CredentialRevision: device.Revision, CIDNegotiated: cidNegotiated, CIDLength: cidLength, PeerAddress: cc.RemoteAddr(), ExpectedHeartbeat: device.Heartbeat, Cancel: cancel, Conn: cc}); err != nil {
 		cancel()
 		r.metrics.handshakeFailure.Add(1)
 		_ = cc.Close()
@@ -198,7 +217,10 @@ func (r *Runtime) onNewConnection(cc *client.Conn) {
 	a, _ := r.registry.Get(device.DeviceID)
 	cc.AddOnClose(func() { r.registry.Remove(device.DeviceID, a.Generation); cancel() })
 	r.metrics.handshakeSuccess.Add(1)
-	r.logger.Info("CoAP association authenticated", "device_id", device.DeviceID, "generation", a.Generation, "cid", cidNegotiated)
+	if cidNegotiated {
+		r.metrics.cidNegotiated.Add(1)
+	}
+	r.logger.Info("CoAP association authenticated", "device_id", device.DeviceID, "generation", a.Generation, "cid_negotiated", cidNegotiated, "cid_length", cidLength)
 	go func() {
 		activityCtx, stop := context.WithTimeout(connCtx, r.config.HTTPTimeout)
 		defer stop()
@@ -207,30 +229,41 @@ func (r *Runtime) onNewConnection(cc *client.Conn) {
 	}()
 }
 
-func stateHasCID(state *piondtls.State) bool {
+func stateConnectionIDs(state *piondtls.State) (local, remote []byte, ok bool) {
 	data, err := state.MarshalBinary()
 	if err != nil {
-		return false
+		return nil, nil, false
 	}
 	var wire struct {
 		LocalConnectionID  []byte
 		RemoteConnectionID []byte
 	}
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&wire); err != nil {
-		return false
+		return nil, nil, false
 	}
-	return len(wire.LocalConnectionID) > 0 || len(wire.RemoteConnectionID) > 0
+	return wire.LocalConnectionID, wire.RemoteConnectionID, true
 }
 
 func (r *Runtime) handleDeviceRequest(w *responsewriter.ResponseWriter[*client.Conn], req *pool.Message) {
+	r.metrics.coapRequestReceived.Add(1)
 	device, ok := req.Context().Value(authContextKey{}).(authenticatedDevice)
 	if !ok {
 		r.respond(w, codes.Unauthorized)
 		return
 	}
+	if device.CIDNegotiated {
+		r.metrics.cidPacketReceived.Add(1)
+	}
 	a, active := r.registry.Get(device.DeviceID)
 	if active {
-		r.registry.Touch(device.DeviceID, a.Generation, a.Conn.RemoteAddr())
+		peer := a.Conn.RemoteAddr()
+		if device.CIDNegotiated && a.CIDNegotiated {
+			r.metrics.cidPacketRouted.Add(1)
+		}
+		if _, changed, previous := r.registry.Touch(device.DeviceID, a.Generation, peer); changed {
+			r.metrics.peerAddressChanged.Add(1)
+			r.logger.Info("CoAP peer address changed", "device_id", device.DeviceID, "generation", a.Generation, "cid_negotiated", a.CIDNegotiated, "cid_length", a.CIDLength, "previous_peer_address", addrString(previous), "peer_address", addrString(peer))
+		}
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), r.config.HTTPTimeout)
@@ -419,7 +452,22 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func (r *Runtime) metricSnapshot() coapapi.Metrics {
-	return coapapi.Metrics{ActiveAssociations: int64(len(r.registry.Snapshot())), HandshakeSuccess: r.metrics.handshakeSuccess.Load(), HandshakeFailure: r.metrics.handshakeFailure.Load(), RequestsAccepted: r.metrics.requestsAccepted.Load(), RequestsRejected: r.metrics.requestsRejected.Load(), DispatchStarted: r.metrics.dispatchStarted.Load(), DispatchFailed: r.metrics.dispatchFailed.Load(), DispatchCompleted: r.metrics.dispatchCompleted.Load()}
+	return coapapi.Metrics{
+		ActiveAssociations:  int64(len(r.registry.Snapshot())),
+		HandshakeSuccess:    r.metrics.handshakeSuccess.Load(),
+		HandshakeFailure:    r.metrics.handshakeFailure.Load(),
+		CIDNegotiated:       r.metrics.cidNegotiated.Load(),
+		CIDLength:           r.metrics.cidLength.Load(),
+		CIDPacketReceived:   r.metrics.cidPacketReceived.Load(),
+		CIDPacketRouted:     r.metrics.cidPacketRouted.Load(),
+		PeerAddressChanged:  r.metrics.peerAddressChanged.Load(),
+		CoAPRequestReceived: r.metrics.coapRequestReceived.Load(),
+		RequestsAccepted:    r.metrics.requestsAccepted.Load(),
+		RequestsRejected:    r.metrics.requestsRejected.Load(),
+		DispatchStarted:     r.metrics.dispatchStarted.Load(),
+		DispatchFailed:      r.metrics.dispatchFailed.Load(),
+		DispatchCompleted:   r.metrics.dispatchCompleted.Load(),
+	}
 }
 
 func (r *Runtime) reconcile(ctx context.Context, deviceID string) {

@@ -77,6 +77,7 @@ type AssociationStatus struct {
 	Generation         uint64 `json:"generation,omitempty"`
 	CredentialRevision int64  `json:"credential_revision,omitempty"`
 	CIDNegotiated      bool   `json:"cid_negotiated"`
+	CIDLength          int    `json:"cid_length,omitempty"`
 	PeerAddress        string `json:"peer_address,omitempty"`
 	LastActivityMS     int64  `json:"last_activity_ms,omitempty"`
 }
@@ -92,12 +93,18 @@ type InvalidateRequest struct {
 }
 
 type Metrics struct {
-	ActiveAssociations int64 `json:"active_associations"`
-	HandshakeSuccess   int64 `json:"handshake_success"`
-	HandshakeFailure   int64 `json:"handshake_failure"`
-	RequestsAccepted   int64 `json:"requests_accepted"`
-	RequestsRejected   int64 `json:"requests_rejected"`
-	DispatchStarted    int64 `json:"dispatch_started"`
-	DispatchFailed     int64 `json:"dispatch_failed"`
-	DispatchCompleted  int64 `json:"dispatch_completed"`
+	ActiveAssociations  int64 `json:"active_associations"`
+	HandshakeSuccess    int64 `json:"handshake_success"`
+	HandshakeFailure    int64 `json:"handshake_failure"`
+	CIDNegotiated       int64 `json:"cid_negotiated"`
+	CIDLength           int64 `json:"cid_length"`
+	CIDPacketReceived   int64 `json:"cid_packet_received"`
+	CIDPacketRouted     int64 `json:"cid_packet_routed"`
+	PeerAddressChanged  int64 `json:"peer_address_changed"`
+	CoAPRequestReceived int64 `json:"coap_request_received"`
+	RequestsAccepted    int64 `json:"requests_accepted"`
+	RequestsRejected    int64 `json:"requests_rejected"`
+	DispatchStarted     int64 `json:"dispatch_started"`
+	DispatchFailed      int64 `json:"dispatch_failed"`
+	DispatchCompleted   int64 `json:"dispatch_completed"`
 }

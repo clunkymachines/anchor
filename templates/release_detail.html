@@ -221,7 +221,7 @@
 								<button class="button button-secondary button-small" type="submit">Unmark</button>
 							</form>
 						{{else}}
-							<form method="post" action="/releases/{{$.ReleaseID}}/cves/{{.CVEID}}/waiver">
+							<form class="cve-waiver-form" method="post" action="/releases/{{$.ReleaseID}}/cves/{{.CVEID}}/waiver">
 								<input type="hidden" name="organisation_id" value="{{$.OrganisationID}}">
 								<input class="input" name="note" placeholder="Optional note">
 								<button class="button button-secondary button-small" type="submit">Mark not relevant</button>

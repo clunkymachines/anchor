@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// DefaultCIDLength is the fixed DTLS CID length used by the frontend and its
+// clients. A configured value of zero remains the explicit CID-off fallback.
+const DefaultCIDLength = 8
+
 type Config struct {
 	UDPListenAddr           string
 	ControlListenAddr       string
@@ -28,7 +32,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	c := Config{UDPListenAddr: valueOr(getenv("COAP_UDP_LISTEN_ADDR"), ":5684"), ControlListenAddr: valueOr(getenv("COAP_CONTROL_LISTEN_ADDR"), ":8081"), AnchorURL: valueOr(getenv("ANCHOR_INTERNAL_URL"), "http://localhost:8080"), BearerToken: getenv("COAP_INTERNAL_BEARER_TOKEN"), HTTPTimeout: 10 * time.Second, CoAPExchangeTimeout: 15 * time.Second, CIDLength: 8, IdleSweepInterval: time.Minute, MaxAssociations: 1000, MaxConcurrentHandshakes: 128, MaxBodyBytes: 64 << 10}
+	c := Config{UDPListenAddr: valueOr(getenv("COAP_UDP_LISTEN_ADDR"), ":5684"), ControlListenAddr: valueOr(getenv("COAP_CONTROL_LISTEN_ADDR"), ":8081"), AnchorURL: valueOr(getenv("ANCHOR_INTERNAL_URL"), "http://localhost:8080"), BearerToken: getenv("COAP_INTERNAL_BEARER_TOKEN"), HTTPTimeout: 10 * time.Second, CoAPExchangeTimeout: 15 * time.Second, CIDLength: DefaultCIDLength, IdleSweepInterval: time.Minute, MaxAssociations: 1000, MaxConcurrentHandshakes: 128, MaxBodyBytes: 64 << 10}
 	var (
 		err  error
 		errs []error
@@ -36,9 +40,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if c.BearerToken == "" {
 		errs = append(errs, errors.New("COAP_INTERNAL_BEARER_TOKEN is required"))
 	}
-	if c.CIDLength, err = parseInt(getenv, "COAP_CID_LENGTH", c.CIDLength); err != nil || c.CIDLength < 0 || c.CIDLength > 32 {
-		errs = append(errs, errors.New("COAP_CID_LENGTH must be between 0 and 32"))
-		c.CIDLength = 8
+	if c.CIDLength, err = parseInt(getenv, "COAP_CID_LENGTH", c.CIDLength); err != nil || (c.CIDLength != 0 && c.CIDLength != DefaultCIDLength) {
+		errs = append(errs, fmt.Errorf("COAP_CID_LENGTH must be 0 or %d", DefaultCIDLength))
+		c.CIDLength = DefaultCIDLength
 	}
 	if c.MaxAssociations, err = parseInt(getenv, "COAP_MAX_ASSOCIATIONS", c.MaxAssociations); err != nil || c.MaxAssociations <= 0 {
 		errs = append(errs, errors.New("COAP_MAX_ASSOCIATIONS must be positive"))
@@ -96,7 +100,7 @@ func (c Config) Validate() error {
 	if c.UDPListenAddr == "" || c.ControlListenAddr == "" || c.AnchorURL == "" || c.BearerToken == "" {
 		return errors.New("frontend listen addresses, Anchor URL, and bearer token are required")
 	}
-	if c.CIDLength < 0 || c.CIDLength > 32 {
+	if c.CIDLength != 0 && c.CIDLength != DefaultCIDLength {
 		return fmt.Errorf("invalid CID length %d", c.CIDLength)
 	}
 	if c.MaxAssociations <= 0 || c.MaxConcurrentHandshakes <= 0 || c.MaxBodyBytes <= 0 || c.MaxBodyBytes > 64<<10 {

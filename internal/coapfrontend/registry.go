@@ -18,6 +18,7 @@ type Association struct {
 	Generation         uint64
 	CredentialRevision int64
 	CIDNegotiated      bool
+	CIDLength          int
 	PeerAddress        net.Addr
 	LastActivity       time.Time
 	ExpectedHeartbeat  time.Duration
@@ -77,24 +78,30 @@ func (r *Registry) Remove(deviceID string, generation uint64) bool {
 	}
 	return true
 }
-func (r *Registry) Touch(deviceID string, generation uint64, peer net.Addr) bool {
+func (r *Registry) Touch(deviceID string, generation uint64, peer net.Addr) (updated, peerChanged bool, previousPeer net.Addr) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a, ok := r.associations[deviceID]
 	if !ok || a.Generation != generation {
-		return false
+		return false, false, nil
 	}
 	a.LastActivity = time.Now()
 	if peer != nil {
+		previousPeer = a.PeerAddress
+		peerChanged = addrString(previousPeer) != addrString(peer)
 		a.PeerAddress = peer
 	}
-	return true
+	return true, peerChanged, previousPeer
 }
 func (r *Registry) Get(deviceID string) (*Association, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a, ok := r.associations[deviceID]
-	return a, ok
+	if !ok {
+		return nil, false
+	}
+	snapshot := *a
+	return &snapshot, true
 }
 func (r *Registry) Snapshot() []Association {
 	r.mu.Lock()
@@ -110,7 +117,7 @@ func (r *Registry) Status(deviceID string) coapapi.AssociationStatus {
 	if !ok {
 		return coapapi.AssociationStatus{DeviceID: deviceID}
 	}
-	return coapapi.AssociationStatus{DeviceID: deviceID, Connected: true, Generation: a.Generation, CredentialRevision: a.CredentialRevision, CIDNegotiated: a.CIDNegotiated, LastActivityMS: a.LastActivity.UnixMilli(), PeerAddress: addrString(a.PeerAddress)}
+	return coapapi.AssociationStatus{DeviceID: deviceID, Connected: true, Generation: a.Generation, CredentialRevision: a.CredentialRevision, CIDNegotiated: a.CIDNegotiated, CIDLength: a.CIDLength, LastActivityMS: a.LastActivity.UnixMilli(), PeerAddress: addrString(a.PeerAddress)}
 }
 
 func (r *Registry) Invalidate(deviceID string, revision int64, force bool) bool {

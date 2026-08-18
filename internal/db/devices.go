@@ -132,7 +132,7 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 
 	query := `
 		SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
-			d.last_seen_ms, d.software_versions, d.is_gateway, mc.username, mc.enabled
+			d.last_seen_ms, d.software_versions, d.is_gateway, d.support_note, mc.username, mc.enabled
 		FROM devices d
 		JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
 		LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
@@ -142,7 +142,7 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `
 			SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds, m.expected_protocol,
-				d.last_seen_ms, d.software_versions, d.is_gateway, mc.username, mc.enabled
+				d.last_seen_ms, d.software_versions, d.is_gateway, d.support_note, mc.username, mc.enabled
 			FROM devices d
 			JOIN device_models m ON m.id = d.device_model_id AND m.organisation_id = d.organisation_id
 			LEFT JOIN mqtt_credentials mc ON mc.device_id = d.id
@@ -160,6 +160,7 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 		&device.LastSeenMS,
 		&versions,
 		&device.IsGateway,
+		&device.SupportNote,
 		&username,
 		&enabled,
 	)
@@ -254,6 +255,36 @@ func (s *Store) DeleteDevice(ctx context.Context, deviceID string, organisationI
 
 	_, err := s.writeDB.ExecContext(ctx, query, args...)
 	return err
+}
+
+// UpdateDeviceSupportNote replaces the support-maintained note for a device.
+func (s *Store) UpdateDeviceSupportNote(ctx context.Context, deviceID string, organisationID int64, note string) error {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	query := `UPDATE devices SET support_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND organisation_id = ?`
+	args := []any{note, deviceID, organisationID}
+	if s.isPostgres() {
+		query = `UPDATE devices SET support_note = $1, updated_at = NOW() WHERE id = $2 AND organisation_id = $3`
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	if err := s.refreshDeviceSearchTextTx(ctx, tx, organisationID, deviceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) FindMQTTCredentialByUsername(ctx context.Context, username string) (domain.DeviceMQTTCredential, error) {
@@ -425,7 +456,8 @@ func (s *Store) RefreshDeviceSearchTextForModel(ctx context.Context, organisatio
 		SET device_search_text = LOWER(TRIM(
 			id || ' ' ||
 			COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
-			COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+			COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '') || ' ' ||
+			support_note
 		))
 		WHERE organisation_id = ? AND device_model_id = ?
 	`
@@ -436,7 +468,8 @@ func (s *Store) RefreshDeviceSearchTextForModel(ctx context.Context, organisatio
 			SET device_search_text = LOWER(TRIM(
 				id || ' ' ||
 				COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
-				COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+				COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '') || ' ' ||
+				support_note
 			))
 			WHERE organisation_id = $1 AND device_model_id = $2
 		`
@@ -451,7 +484,8 @@ func (s *Store) refreshDeviceSearchTextTx(ctx context.Context, tx txRunner, orga
 		SET device_search_text = LOWER(TRIM(
 			id || ' ' ||
 			COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
-			COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+			COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '') || ' ' ||
+			support_note
 		))
 		WHERE organisation_id = ? AND id = ?
 	`
@@ -462,7 +496,8 @@ func (s *Store) refreshDeviceSearchTextTx(ctx context.Context, tx txRunner, orga
 			SET device_search_text = LOWER(TRIM(
 				id || ' ' ||
 				COALESCE((SELECT name FROM device_models WHERE organisation_id = devices.organisation_id AND id = devices.device_model_id), '') || ' ' ||
-				COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '')
+				COALESCE((SELECT username FROM mqtt_credentials WHERE device_id = devices.id), '') || ' ' ||
+				support_note
 			))
 			WHERE organisation_id = $1 AND id = $2
 		`

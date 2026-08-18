@@ -191,6 +191,8 @@ type Device struct {
 	SoftwareVersions SoftwareVersions
 	// IsGateway allows the device to publish data for other devices in its organisation.
 	IsGateway bool
+	// SupportNote contains free-form operational context maintained by support users.
+	SupportNote string
 }
 
 type DeviceModel struct {

@@ -90,6 +90,7 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"device_model_id",
 		"software_versions",
 		"is_gateway",
+		"support_note",
 		"device_search_text",
 		"created_at",
 		"updated_at",
@@ -997,6 +998,55 @@ func TestSaveDeviceWithMQTTCredential(t *testing.T) {
 	}
 	if detail.Device.OrganisationID != organisationID || !detail.Device.IsGateway {
 		t.Fatalf("unexpected device detail organisation/gateway: %#v", detail.Device)
+	}
+}
+
+func TestUpdateDeviceSupportNote(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Dialect: DialectSQLite, DSN: filepath.Join(t.TempDir(), "anchor.db")})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID := testOrganisationID(t, store)
+	device := domain.Device{
+		ID:               "device-note-001",
+		OrganisationID:   organisationID,
+		DeviceModelID:    testDeviceModelID(t, store, organisationID, "Sensor"),
+		SoftwareVersions: domain.SoftwareVersions{},
+	}
+	if err := store.SaveDevice(ctx, device); err != nil {
+		t.Fatalf("save device: %v", err)
+	}
+	if err := store.UpdateDeviceSupportNote(ctx, device.ID, organisationID, "Installed above the east entrance."); err != nil {
+		t.Fatalf("update support note: %v", err)
+	}
+
+	detail, err := store.DeviceDetail(ctx, device.ID, organisationID)
+	if err != nil {
+		t.Fatalf("load device detail: %v", err)
+	}
+	if detail.Device.SupportNote != "Installed above the east entrance." {
+		t.Fatalf("unexpected support note %q", detail.Device.SupportNote)
+	}
+
+	// Provisioning updates must not erase the independently maintained support note.
+	if err := store.SaveDevice(ctx, device); err != nil {
+		t.Fatalf("save device again: %v", err)
+	}
+	detail, err = store.DeviceDetail(ctx, device.ID, organisationID)
+	if err != nil {
+		t.Fatalf("reload device detail: %v", err)
+	}
+	if detail.Device.SupportNote != "Installed above the east entrance." {
+		t.Fatalf("support note was erased during device upsert: %q", detail.Device.SupportNote)
+	}
+
+	if err := store.UpdateDeviceSupportNote(ctx, "missing-device", organisationID, "note"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected missing device error, got %v", err)
 	}
 }
 

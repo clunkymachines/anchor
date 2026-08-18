@@ -36,7 +36,7 @@ The frontend foundation is configured with:
 | `COAP_INTERNAL_BEARER_TOKEN` | required | shared internal bearer |
 | `COAP_HTTP_TIMEOUT` | `10s` | frontend-to-Anchor request timeout |
 | `COAP_EXCHANGE_TIMEOUT` | `15s` | one device CoAP exchange timeout |
-| `COAP_CID_LENGTH` | `8` | fixed CID length; `0` disables CIDs |
+| `COAP_CID_LENGTH` | `8` | fixed CID length; only `8` or the CID-off fallback `0` is accepted |
 | `COAP_IDLE_SWEEP_INTERVAL` | `1m` | inactive-association sweep interval |
 | `COAP_MAX_ASSOCIATIONS` | `1000` | active association cap |
 | `COAP_MAX_CONCURRENT_HANDSHAKES` | `128` | handshake cap |
@@ -54,6 +54,20 @@ The DTLS endpoint permits only `TLS_PSK_WITH_AES_128_CCM_8` and
 `TLS_PSK_WITH_AES_128_CCM`, requires the extended master secret, and enables
 Pion replay protection. CID is reported as negotiated only when the device also
 offers RFC 9146 CID support.
+
+CID migration requires the same frontend process and in-memory DTLS context to
+remain alive across device cycles. A frontend restart intentionally discards
+that context and requires a fresh handshake. Anchor disables go-coap's default
+16-second DTLS inactivity close and delegates association expiry to the
+registry sweep. The private metrics endpoint
+reports `cid_negotiated`, `cid_length`, `cid_packet_received`,
+`cid_packet_routed`, `peer_address_changed`, and `coap_request_received` for
+diagnosing negotiation and tuple migration. Set `COAP_CID_LENGTH=0` only as a
+temporary fallback when clients cannot migrate a retained CID session.
+`cid_packet_received` starts at the established DTLS connection, after Pion's
+UDP CID demultiplexer; `cid_packet_routed` additionally confirms the request
+matched the authenticated association. Raw datagrams rejected by the
+demultiplexer remain visible only in a packet capture.
 
 Run the two processes separately:
 

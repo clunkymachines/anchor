@@ -1,7 +1,7 @@
 # Anchor
 
 <p align="center">
-  <img src="logo.png" alt="Anchor by Clunky Machines" width="120">
+  <img src="static/logo.png" alt="Anchor by Clunky Machines" width="120">
 </p>
 
 Anchor is a web application for managing connected-device fleets. It brings device inventory, telemetry, remote tasks, firmware releases, campaigns, and software vulnerability tracking into one place.

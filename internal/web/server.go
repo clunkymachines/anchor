@@ -26,6 +26,8 @@ import (
 	"anchor/internal/db"
 	"anchor/internal/domain"
 	"anchor/internal/taskdispatch"
+	staticassets "anchor/static"
+	templateassets "anchor/templates"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -362,6 +364,7 @@ type deviceDetailView struct {
 	Status              string
 	StatusClass         string
 	LastSeen            string
+	SupportNote         string
 }
 
 type mqttCredentialView struct {
@@ -582,7 +585,7 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 
 	server := &Server{
 		store:                  store,
-		templates:              template.Must(template.New("").Funcs(template.FuncMap{"dict": templateDict, "localTime": localTimeElement}).ParseGlob("templates/*.html")),
+		templates:              parseTemplates(),
 		internalMQTTClientAuth: config.InternalMQTTClientAuth,
 		mqttIntegrationRuntime: config.MQTTIntegrationRuntime,
 		taskPublisher:          config.TaskPublisher,
@@ -634,7 +637,7 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /logo.png", server.logo)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticassets.Files))))
 	mux.HandleFunc("GET /", server.home)
 	mux.HandleFunc("GET /login", server.login)
 	mux.HandleFunc("POST /login", server.loginPost)
@@ -651,6 +654,7 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("GET /devices/{deviceID}/tasks/new", server.requireAuth(http.HandlerFunc(server.deviceTaskNew)))
 	mux.Handle("POST /devices", server.requireAuth(http.HandlerFunc(server.devicesPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTaskPost)))
+	mux.Handle("POST /devices/{deviceID}/support-note", server.requireAuth(http.HandlerFunc(server.deviceSupportNotePost)))
 	mux.Handle("POST /devices/{deviceID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.deviceTaskCancelPost)))
 	mux.Handle("POST /devices/{deviceID}/coap/replace", server.requireAuth(http.HandlerFunc(server.deviceCoAPReplacePost)))
 	mux.Handle("POST /devices/{deviceID}/coap/toggle", server.requireAuth(http.HandlerFunc(server.deviceCoAPTogglePost)))
@@ -706,6 +710,13 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	return mux
 }
 
+func parseTemplates() *template.Template {
+	return template.Must(template.New("").Funcs(template.FuncMap{
+		"dict":      templateDict,
+		"localTime": localTimeElement,
+	}).ParseFS(templateassets.Files, "*.html"))
+}
+
 func templateDict(values ...any) (map[string]any, error) {
 	if len(values)%2 != 0 {
 		return nil, errors.New("dict requires an even number of arguments")
@@ -723,7 +734,7 @@ func templateDict(values ...any) (map[string]any, error) {
 }
 
 func (s *Server) logo(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "logo.png")
+	http.ServeFileFS(w, r, staticassets.Files, "logo.png")
 }
 
 func (s *Server) home(w http.ResponseWriter, r *http.Request) {
@@ -1208,6 +1219,40 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/devices?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) deviceSupportNotePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	deviceID := r.PathValue("deviceID")
+	if deviceID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	note := strings.TrimSpace(r.FormValue("support_note"))
+	if len([]rune(note)) > 4000 {
+		http.Error(w, "support note must be 4000 characters or fewer", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateDeviceSupportNote(r.Context(), deviceID, organisationID, note); errors.Is(err, db.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, "support note update error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/devices/"+url.PathEscape(deviceID)+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
 
 func (s *Server) deviceCoAPReplacePost(w http.ResponseWriter, r *http.Request) {
@@ -3680,6 +3725,7 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 			Status:              connectivity.Status,
 			StatusClass:         connectivity.StatusClass,
 			LastSeen:            connectivity.LastSeen,
+			SupportNote:         detail.Device.SupportNote,
 		},
 	}
 	if cveStatus.MatchedReleaseID > 0 {
@@ -4127,15 +4173,18 @@ func groupedCVEFindings(findings []domain.CVEScanFinding, waivers []domain.Relea
 }
 
 func sortedCVEGroups(groups map[string]*cveGroupView) []cveGroupView {
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
-		keys = append(keys, key)
+	result := make([]cveGroupView, 0, len(groups))
+	for _, group := range groups {
+		result = append(result, *group)
 	}
-	sort.Strings(keys)
-	result := make([]cveGroupView, 0, len(keys))
-	for _, key := range keys {
-		result = append(result, *groups[key])
-	}
+	sort.Slice(result, func(i, j int) bool {
+		iRank := cveSeverityRank(result[i].Severity)
+		jRank := cveSeverityRank(result[j].Severity)
+		if iRank != jRank {
+			return iRank > jRank
+		}
+		return result[i].CVEID < result[j].CVEID
+	})
 	return result
 }
 
