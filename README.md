@@ -6,6 +6,8 @@
 
 Anchor is a web application for managing connected-device fleets. It brings device inventory, telemetry, remote tasks, firmware releases, campaigns, and software vulnerability tracking into one place.
 
+![Anchor device fleet showing MQTT and CoAP over DTLS devices](docs/anchor-device-fleet.jpg)
+
 Anchor is early-stage software. Database schemas may change between versions; during development, delete and recreate local databases when the fresh schema changes.
 
 ## What You Can Do
@@ -18,6 +20,7 @@ Anchor is early-stage software. Database schemas may change between versions; du
 - Upload SPDX SBOMs and review CVEs detected in firmware releases.
 - Provision devices through organisation-scoped API credentials.
 - Connect MQTT devices through Mosquitto, including gateway devices.
+- Connect constrained devices through CoAP over DTLS 1.2 with per-device PSKs and optional Connection IDs (CID).
 
 ## Quick Start
 
@@ -27,6 +30,8 @@ Anchor is early-stage software. Database schemas may change between versions; du
 - SQLite, included and used by default
 
 Mosquitto is only required when connecting MQTT devices. Grype is only required when scanning release SBOMs for CVEs.
+
+CoAP/DTLS support is provided by the included `coap-frontend` process; it does not require a separate CoAP server.
 
 ### Start Anchor
 
@@ -47,15 +52,40 @@ For a disposable local start, the default password is `anchor`. Do not use that 
 
 ## Connect Your First Device
 
-1. Open **Device models** and create a model with its expected heartbeat interval and protocol.
-2. If the device uses MQTT, configure Mosquitto to use Anchor for authentication and ACL checks. See [MQTT setup](MQTT.md#mosquitto-setup).
-3. As an Anchor administrator, open **Integrations**, configure **MQTT with Mosquitto**, and activate it.
-4. Confirm that **Broker connection** reports **Connected**. If it does not, Anchor displays the latest connection reason.
-5. Open **Devices**, create a device, choose the model, and set its MQTT username and password.
-6. Configure the device with the displayed data and task topics, then connect it to Mosquitto.
-7. Open the device in Anchor to inspect telemetry, raw events, current twin values, software versions, and tasks.
+Open **Device models** and create a model with its expected heartbeat interval and protocol, then follow the matching setup below.
+
+### MQTT
+
+1. Configure Mosquitto to use Anchor for authentication and ACL checks. See [MQTT setup](MQTT.md#mosquitto-setup).
+2. As an Anchor administrator, open **Integrations**, configure **MQTT with Mosquitto**, and activate it.
+3. Confirm that **Broker connection** reports **Connected**. If it does not, Anchor displays the latest connection reason.
+4. Open **Devices**, create a device, choose the MQTT model, and set its username and password.
+5. Configure the device with the displayed data and task topics, then connect it to Mosquitto.
 
 The MQTT payload and topic contract is documented in [MQTT.md](MQTT.md).
+
+### CoAP over DTLS
+
+Start Anchor and the included CoAP frontend in separate terminals with the same high-entropy internal bearer token:
+
+```sh
+COAP_INTERNAL_BEARER_TOKEN='choose-a-long-random-token' go run .
+```
+
+```sh
+COAP_INTERNAL_BEARER_TOKEN='choose-a-long-random-token' go run ./cmd/coap-frontend
+```
+
+Then:
+
+1. As an Anchor administrator, open **Integrations**, set the CoAP frontend URL to `http://127.0.0.1:8081`, enter the same bearer token, and activate the integration.
+2. Open **Devices**, create a device using a CoAP model, and retain the generated PSK; it is displayed only once.
+3. Configure the device for CoAPS on UDP port `5684` with the displayed PSK identity and key.
+4. Implement the Confirmable CBOR resources used for telemetry, heartbeats, task status, and remote operations.
+
+Expose only the CoAPS/DTLS UDP listener to devices. Keep the frontend control listener and Anchor's internal CoAP API on a trusted private network. The resource contract, supported DTLS cipher suites, CID behavior, limits, and complete configuration are documented in [COAP.md](COAP.md).
+
+Open the device in Anchor to inspect telemetry, raw events, current twin values, software versions, and tasks regardless of the selected protocol.
 
 ## Core Workflows
 
@@ -66,7 +96,7 @@ The **Devices** page shows fleet connectivity, model, software, CVE, and communi
 - current materialised telemetry values;
 - recent raw device events;
 - reported software versions;
-- communication credentials and topics;
+- communication credentials, MQTT topics, or CoAP PSK identity;
 - active and recent tasks.
 
 Device connectivity is calculated from the heartbeat interval configured on its model.
@@ -141,6 +171,7 @@ The status refreshes automatically. Common causes of failure include an unreacha
 ## Further Documentation
 
 - [MQTT protocol and Mosquitto setup](MQTT.md)
+- [CoAP/DTLS protocol and frontend setup](COAP.md)
 - [Application-backend device API](API-DEVICE.md)
 - [Fleet simulator](SIMULATOR.md)
 - [Contributing](CONTRIBUTING.md)
