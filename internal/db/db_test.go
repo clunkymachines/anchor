@@ -232,6 +232,97 @@ func TestOpenSQLiteCreatesSchema(t *testing.T) {
 		"expires_at",
 		"created_at",
 	})
+	assertColumns(t, store, "schema_migrations", []string{
+		"id",
+		"applied_at",
+	})
+
+	var migrationCount int
+	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE id = 1`).Scan(&migrationCount); err != nil {
+		t.Fatalf("read schema migration: %v", err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("expected migration 1 to be recorded once, got %d records", migrationCount)
+	}
+}
+
+func TestMigrationsOnlyRunOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, Config{
+		Dialect: DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	testMigration := migration{
+		id: 2,
+		statements: []string{
+			`CREATE TABLE migration_test (value TEXT NOT NULL);`,
+			`INSERT INTO migration_test (value) VALUES ('applied');`,
+		},
+	}
+	if err := store.applyMigrations(ctx, []migration{testMigration}); err != nil {
+		t.Fatalf("apply migration: %v", err)
+	}
+	if err := store.applyMigrations(ctx, []migration{testMigration}); err != nil {
+		t.Fatalf("reapply migration: %v", err)
+	}
+
+	var rowCount int
+	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM migration_test`).Scan(&rowCount); err != nil {
+		t.Fatalf("read migration test rows: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected migration statements to run once, got %d rows", rowCount)
+	}
+}
+
+func TestFailedMigrationRollsBack(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, Config{
+		Dialect: DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	err = store.applyMigrations(ctx, []migration{
+		{
+			id: 2,
+			statements: []string{
+				`CREATE TABLE rolled_back_migration (value TEXT NOT NULL);`,
+				`THIS IS NOT SQL;`,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected migration to fail")
+	}
+
+	var tableCount int
+	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rolled_back_migration'`).Scan(&tableCount); err != nil {
+		t.Fatalf("check rolled back table: %v", err)
+	}
+	if tableCount != 0 {
+		t.Fatal("expected failed migration statements to roll back")
+	}
+
+	var migrationCount int
+	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE id = 2`).Scan(&migrationCount); err != nil {
+		t.Fatalf("check failed migration record: %v", err)
+	}
+	if migrationCount != 0 {
+		t.Fatal("expected failed migration not to be recorded")
+	}
 }
 
 func TestListOrganisationsForUser(t *testing.T) {

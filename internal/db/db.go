@@ -1,4 +1,4 @@
-// Package db owns database connection setup, schema creation, and persistence helpers.
+// Package db owns database connection setup, migrations, and persistence helpers.
 package db
 
 import (
@@ -41,7 +41,7 @@ type Store struct {
 	scans   *deviceEventNotifier
 }
 
-// Open creates a store, configures the database connection, verifies it, and applies the schema.
+// Open creates a store, configures the database connection, verifies it, and runs migrations.
 func Open(ctx context.Context, cfg Config) (*Store, error) {
 	// Normalize config before selecting the driver or opening any handles.
 	if cfg.Dialect == "" {
@@ -110,8 +110,8 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 	}
 
-	// Apply the current schema. Migrations will replace this once schema history matters.
-	if err := store.InitSchema(ctx); err != nil {
+	// Run outstanding migrations before any application code can access the store.
+	if err := store.Migrate(ctx); err != nil {
 		store.Close()
 		return nil, err
 	}
@@ -126,28 +126,6 @@ func (s *Store) Close() error {
 	}
 
 	return errors.Join(s.readDB.Close(), s.writeDB.Close())
-}
-
-// InitSchema creates the database schema.
-func (s *Store) InitSchema(ctx context.Context) error {
-	statements, err := s.dialect.schemaStatements()
-	if err != nil {
-		return err
-	}
-
-	tx, err := s.writeDB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply schema statement: %w", err)
-		}
-	}
-
-	return tx.Commit()
 }
 
 func configureSQLite(ctx context.Context, db *sql.DB) error {
@@ -182,7 +160,9 @@ func (d Dialect) driverName() (string, error) {
 	}
 }
 
-func (d Dialect) schemaStatements() ([]string, error) {
+// initialSchemaStatements is migration 1. It is intentionally kept immutable;
+// append a new migration in migrationsForDialect for every future schema change.
+func (d Dialect) initialSchemaStatements() ([]string, error) {
 	switch d {
 	case DialectSQLite:
 		return []string{
