@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"anchor/internal/buildinfo"
 	"anchor/internal/coapcontrol"
 	"anchor/internal/db"
 	"anchor/internal/domain"
@@ -21,6 +22,7 @@ const defaultHTTPAddr = ":8080"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.Info("starting app", "version", buildinfo.Version)
 
 	ctx := context.Background()
 

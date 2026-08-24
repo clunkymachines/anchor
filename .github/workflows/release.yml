@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release archives
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          for target in linux/amd64 linux/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            package="anchor-${VERSION}-${os}-${arch}"
+            package_dir="dist/${package}"
+            mkdir -p "${package_dir}"
+
+            ldflags="-s -w -X anchor/internal/buildinfo.Version=${VERSION}"
+            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "${ldflags}" -o "${package_dir}/anchor" .
+            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "${ldflags}" -o "${package_dir}/coap-frontend" ./cmd/coap-frontend
+            cp LICENSE README.md "${package_dir}/"
+            tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          done
+
+          cd dist
+          sha256sum ./*.tar.gz > checksums.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: gh release create "${VERSION}" dist/*.tar.gz dist/checksums.txt --verify-tag --generate-notes --title "${VERSION}"

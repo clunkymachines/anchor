@@ -1,4 +1,11 @@
 anchor
+/build/
+/dist/
+
+# Local project specifications.
+/specs/DESIGN.md
+/specs/ORGANISATIONS.md
+/specs/STYLE.md
 
 # Local SQLite database and runtime sidecar files.
 anchor.db

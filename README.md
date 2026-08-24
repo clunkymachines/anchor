@@ -8,7 +8,7 @@ Anchor is a web application for managing connected-device fleets. It brings devi
 
 ![Anchor device fleet showing MQTT and CoAP over DTLS devices](docs/anchor-device-fleet.jpg)
 
-Anchor is early-stage software. Database schemas may change between versions; during development, delete and recreate local databases when the fresh schema changes.
+Anchor is in technical preview. Database changes are applied automatically by startup migrations.
 
 ## What You Can Do
 
@@ -41,6 +41,8 @@ From the repository root, set a password for the initial Anchor administrator an
 ANCHOR_ADMIN_PASSWORD='choose-a-password' go run .
 ```
 
+`go run` reports the development version. To inject the version derived from the nearest Git tag and commit, use `make run` instead.
+
 Open [http://localhost:8080](http://localhost:8080) and sign in with:
 
 - Email: `admin@anchor.local`
@@ -49,6 +51,25 @@ Open [http://localhost:8080](http://localhost:8080) and sign in with:
 Anchor creates `anchor.db`, the administrator account, and a personal organisation on the first run. Bootstrap account settings only apply when creating the first user, so set them before starting with a new database.
 
 For a disposable local start, the default password is `anchor`. Do not use that default outside local development.
+
+## Builds and GitHub Releases
+
+Build local `anchor` and `coap-frontend` binaries with a version derived from `git describe`:
+
+```sh
+make build
+```
+
+Anchor prints that version as soon as it starts. Untagged builds include the commit and a `-dirty` suffix when the working tree has changes.
+
+To publish a GitHub release, create and push a semantic-version tag:
+
+```sh
+git tag -a v0.1.0 -m "Anchor v0.1.0"
+git push origin v0.1.0
+```
+
+The release workflow tests the repository, builds Linux amd64 and arm64 archives containing `anchor` and `coap-frontend`, generates SHA-256 checksums, and creates the GitHub release with generated release notes.
 
 ## Connect Your First Device
 
