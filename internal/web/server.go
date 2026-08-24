@@ -183,6 +183,8 @@ type campaignSelectionPageData struct {
 	FormError    string
 	Name         string
 	TaskType     string
+	TaskLabel    string
+	TaskHelp     string
 	ReadPaths    string
 	WriteValues  string
 	TTLDays      int
@@ -244,9 +246,14 @@ type deviceTaskLaunchPageData struct {
 	Shell         shellPageData
 	Device        deviceDetailView
 	Releases      []releaseOptionView
+	TaskType      string
+	TaskLabel     string
+	TaskHelp      string
 	TaskFormError string
 	ReadPaths     string
 	WriteValues   string
+	ReleaseID     int64
+	TTLDays       string
 }
 
 type releasesPageData struct {
@@ -651,7 +658,7 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("GET /devices/{deviceID}/events", server.requireAuth(http.HandlerFunc(server.deviceEvents)))
 	mux.Handle("GET /devices/{deviceID}/telemetry", server.requireAuth(http.HandlerFunc(server.deviceTelemetry)))
 	mux.Handle("GET /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTasks)))
-	mux.Handle("GET /devices/{deviceID}/tasks/new", server.requireAuth(http.HandlerFunc(server.deviceTaskNew)))
+	mux.Handle("GET /devices/{deviceID}/tasks/new/{taskType}", server.requireAuth(http.HandlerFunc(server.deviceTaskNew)))
 	mux.Handle("POST /devices", server.requireAuth(http.HandlerFunc(server.devicesPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTaskPost)))
 	mux.Handle("POST /devices/{deviceID}/support-note", server.requireAuth(http.HandlerFunc(server.deviceSupportNotePost)))
@@ -1017,6 +1024,11 @@ func (s *Server) deviceTaskNew(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	taskType := r.PathValue("taskType")
+	if _, _, ok := deviceTaskLaunchCopy(taskType); !ok {
+		http.NotFound(w, r)
+		return
+	}
 
 	shell, ok := s.shellData(w, r)
 	if !ok {
@@ -1028,7 +1040,7 @@ func (s *Server) deviceTaskNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.loadDeviceTaskLaunchPageData(r.Context(), shell, deviceID, organisationID, "")
+	data, err := s.loadDeviceTaskLaunchPageData(r.Context(), shell, deviceID, organisationID, taskType, "")
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -1360,6 +1372,10 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskType := r.FormValue("task_type")
+	if _, _, ok := deviceTaskLaunchCopy(taskType); !ok {
+		http.Error(w, "choose a supported task type", http.StatusBadRequest)
+		return
+	}
 	parametersJSON, err := s.taskParametersFromForm(r, taskType, organisationID)
 	if err == nil {
 		if protocol, protocolErr := s.store.DeviceExpectedProtocol(r.Context(), deviceID, organisationID); protocolErr != nil {
@@ -1369,11 +1385,11 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, err.Error())
+		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, taskType, err.Error())
 		return
 	}
 	if parametersJSON == "" {
-		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, "Choose a supported task type.")
+		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, taskType, "Choose a supported task type.")
 		return
 	}
 
@@ -1384,7 +1400,7 @@ func (s *Server) deviceTaskPost(w http.ResponseWriter, r *http.Request) {
 	}
 	_, ttlSeconds, err := domain.ParseTaskTTLDays(r.FormValue("ttl_days"))
 	if err != nil {
-		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, err.Error())
+		s.renderDeviceTaskNewWithError(w, r, shell, deviceID, organisationID, taskType, err.Error())
 		return
 	}
 	task, err = s.store.CreateQueuedDeviceTask(r.Context(), organisationID, db.CreateDeviceTaskOptions{
@@ -1518,8 +1534,8 @@ func (s *Server) deviceTaskCancelPost(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "/devices/"+deviceID+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
 }
 
-func (s *Server) renderDeviceTaskNewWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, deviceID string, organisationID int64, message string) {
-	data, err := s.loadDeviceTaskLaunchPageData(r.Context(), shell, deviceID, organisationID, message)
+func (s *Server) renderDeviceTaskNewWithError(w http.ResponseWriter, r *http.Request, shell shellPageData, deviceID string, organisationID int64, taskType string, message string) {
+	data, err := s.loadDeviceTaskLaunchPageData(r.Context(), shell, deviceID, organisationID, taskType, message)
 	if errors.Is(err, db.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -1530,6 +1546,8 @@ func (s *Server) renderDeviceTaskNewWithError(w http.ResponseWriter, r *http.Req
 	}
 	data.ReadPaths = r.FormValue("read_paths")
 	data.WriteValues = r.FormValue("write_values")
+	data.TTLDays = r.FormValue("ttl_days")
+	data.ReleaseID, _ = strconv.ParseInt(r.FormValue("release_id"), 10, 64)
 
 	s.renderDeviceTaskNew(w, data)
 }
@@ -2551,9 +2569,22 @@ func (s *Server) campaignNewPost(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, r.Form["device_id"], "")
+	taskType := r.FormValue("task_type")
+	taskLabel, taskHelp, ok := campaignTaskLaunchCopy(taskType)
+	if !ok {
+		http.Error(w, "choose a supported task type", http.StatusBadRequest)
+		return
+	}
+	data, err := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, r.Form["device_id"], taskType, "")
 	if err != nil {
-		s.renderCampaignNew(w, campaignSelectionPageData{Shell: shell, FormError: err.Error(), TTLDays: domain.DefaultTaskTTLDays})
+		s.renderCampaignNew(w, campaignSelectionPageData{
+			Shell:     shell,
+			FormError: err.Error(),
+			TaskType:  taskType,
+			TaskLabel: taskLabel,
+			TaskHelp:  taskHelp,
+			TTLDays:   domain.DefaultTaskTTLDays,
+		})
 		return
 	}
 	s.renderCampaignNew(w, data)
@@ -2575,6 +2606,10 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceIDs := r.Form["device_id"]
 	taskType := r.FormValue("task_type")
+	if _, _, ok := deviceTaskLaunchCopy(taskType); !ok {
+		http.Error(w, "choose a supported task type", http.StatusBadRequest)
+		return
+	}
 	parametersJSON, err := s.taskParametersFromForm(r, taskType, organisationID)
 	if err == nil && (taskType == domain.TaskTypeRead || taskType == domain.TaskTypeWrite) {
 		for _, deviceID := range deviceIDs {
@@ -2604,7 +2639,7 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 		err = errors.New("choose a supported task type")
 	}
 	if err != nil {
-		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, err.Error())
+		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, taskType, err.Error())
 		if loadErr != nil {
 			http.Error(w, loadErr.Error(), http.StatusBadRequest)
 			return
@@ -2628,7 +2663,7 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:      time.Now().UTC(),
 	})
 	if err != nil {
-		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, err.Error())
+		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, taskType, err.Error())
 		if loadErr != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -3775,15 +3810,22 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 	return data, nil
 }
 
-func (s *Server) loadDeviceTaskLaunchPageData(ctx context.Context, shell shellPageData, deviceID string, organisationID int64, taskFormError string) (deviceTaskLaunchPageData, error) {
+func (s *Server) loadDeviceTaskLaunchPageData(ctx context.Context, shell shellPageData, deviceID string, organisationID int64, taskType string, taskFormError string) (deviceTaskLaunchPageData, error) {
+	taskLabel, taskHelp, ok := deviceTaskLaunchCopy(taskType)
+	if !ok {
+		return deviceTaskLaunchPageData{}, db.ErrNotFound
+	}
 	detail, err := s.store.DeviceDetail(ctx, deviceID, organisationID)
 	if err != nil {
 		return deviceTaskLaunchPageData{}, err
 	}
 	connectivity := deviceConnectivity(detail.Device, time.Now())
-	releases, err := s.loadReleaseOptions(ctx, organisationID)
-	if err != nil {
-		return deviceTaskLaunchPageData{}, err
+	var releases []releaseOptionView
+	if taskType == domain.TaskTypeFOTA {
+		releases, err = s.loadReleaseOptions(ctx, organisationID)
+		if err != nil {
+			return deviceTaskLaunchPageData{}, err
+		}
 	}
 
 	return deviceTaskLaunchPageData{
@@ -3796,13 +3838,47 @@ func (s *Server) loadDeviceTaskLaunchPageData(ctx context.Context, shell shellPa
 			StatusClass:    connectivity.StatusClass,
 			LastSeen:       connectivity.LastSeen,
 		},
+		TaskType:      taskType,
+		TaskLabel:     taskLabel,
+		TaskHelp:      taskHelp,
 		Releases:      releases,
 		TaskFormError: taskFormError,
 		WriteValues:   "[{\"path\":\"config.sample_interval\",\"value\":60}]",
+		TTLDays:       "7",
 	}, nil
 }
 
-func (s *Server) loadCampaignSelectionPageData(ctx context.Context, shell shellPageData, organisationID int64, deviceIDs []string, formError string) (campaignSelectionPageData, error) {
+func deviceTaskLaunchCopy(taskType string) (label string, help string, ok bool) {
+	switch taskType {
+	case domain.TaskTypeRead:
+		return "Read", "Request current twin values from the device.", true
+	case domain.TaskTypeWrite:
+		return "Write", "Send typed JSON values to device paths.", true
+	case domain.TaskTypeFOTA:
+		return "FOTA", "Ask the device to download and install a release.", true
+	default:
+		return "", "", false
+	}
+}
+
+func campaignTaskLaunchCopy(taskType string) (label string, help string, ok bool) {
+	switch taskType {
+	case domain.TaskTypeRead:
+		return "Read", "Request current twin values from the selected devices.", true
+	case domain.TaskTypeWrite:
+		return "Write", "Send typed JSON values to paths on the selected devices.", true
+	case domain.TaskTypeFOTA:
+		return "FOTA", "Ask the selected devices to download and install a release.", true
+	default:
+		return "", "", false
+	}
+}
+
+func (s *Server) loadCampaignSelectionPageData(ctx context.Context, shell shellPageData, organisationID int64, deviceIDs []string, taskType string, formError string) (campaignSelectionPageData, error) {
+	taskLabel, taskHelp, ok := campaignTaskLaunchCopy(taskType)
+	if !ok {
+		return campaignSelectionPageData{}, errors.New("choose a supported task type")
+	}
 	devices, err := s.store.CampaignTargetDevices(ctx, organisationID, deviceIDs)
 	if err != nil {
 		return campaignSelectionPageData{}, err
@@ -3818,26 +3894,29 @@ func (s *Server) loadCampaignSelectionPageData(ctx context.Context, shell shellP
 		}
 		views = append(views, campaignDevicePreviewView{ID: device.ID, ModelName: device.ModelName, ModelID: device.DeviceModelID})
 	}
-	releases, err := s.loadReleaseOptions(ctx, organisationID)
-	if err != nil {
-		return campaignSelectionPageData{}, err
-	}
-	filteredReleases := make([]releaseOptionView, 0, len(releases))
-	if sameModel {
-		for _, release := range releases {
-			releaseRecord, err := s.store.SoftwareRelease(ctx, release.ID, organisationID)
-			if err != nil {
-				return campaignSelectionPageData{}, err
-			}
-			if releaseRecord.DeviceModelID == modelID {
-				filteredReleases = append(filteredReleases, release)
+	var filteredReleases []releaseOptionView
+	if taskType == domain.TaskTypeFOTA {
+		releases, err := s.loadReleaseOptions(ctx, organisationID)
+		if err != nil {
+			return campaignSelectionPageData{}, err
+		}
+		filteredReleases = make([]releaseOptionView, 0, len(releases))
+		if sameModel {
+			for _, release := range releases {
+				releaseRecord, err := s.store.SoftwareRelease(ctx, release.ID, organisationID)
+				if err != nil {
+					return campaignSelectionPageData{}, err
+				}
+				if releaseRecord.DeviceModelID == modelID {
+					filteredReleases = append(filteredReleases, release)
+				}
 			}
 		}
 	}
 	help := ""
-	if !sameModel {
+	if taskType == domain.TaskTypeFOTA && !sameModel {
 		help = "FOTA campaigns require all selected devices to use the same model."
-	} else if len(filteredReleases) == 0 {
+	} else if taskType == domain.TaskTypeFOTA && len(filteredReleases) == 0 {
 		help = "No compatible releases are available for the selected model."
 	}
 	return campaignSelectionPageData{
@@ -3845,7 +3924,9 @@ func (s *Server) loadCampaignSelectionPageData(ctx context.Context, shell shellP
 		Devices:      views,
 		Releases:     filteredReleases,
 		FormError:    formError,
-		TaskType:     domain.TaskTypeRead,
+		TaskType:     taskType,
+		TaskLabel:    taskLabel,
+		TaskHelp:     taskHelp,
 		WriteValues:  "[{\"path\":\"config.sample_interval\",\"value\":60}]",
 		TTLDays:      domain.DefaultTaskTTLDays,
 		CanUseFOTA:   len(filteredReleases) > 0,

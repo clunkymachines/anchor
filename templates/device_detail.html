@@ -277,7 +277,26 @@
 			<h2 class="card-title">Tasks</h2>
 			<p class="card-subtitle">{{len .ActiveAndRecentTasks}} active and recent tasks</p>
 		</div>
-		<a class="button button-primary" href="/devices/{{.Device.ID}}/tasks/new?organisation_id={{.Device.OrganisationID}}">Launch task</a>
+		<details class="action-menu task-launch-menu">
+			<summary class="button button-primary">
+				Launch task
+				<span class="action-menu-chevron" aria-hidden="true">{{template "icon_chevron_down" .}}</span>
+			</summary>
+			<nav class="action-menu-popover" aria-label="Choose task type">
+				<a class="action-menu-item" href="/devices/{{.Device.ID}}/tasks/new/read?organisation_id={{.Device.OrganisationID}}">
+					<strong>Read</strong>
+					<span>Fetch current values</span>
+				</a>
+				<a class="action-menu-item" href="/devices/{{.Device.ID}}/tasks/new/write?organisation_id={{.Device.OrganisationID}}">
+					<strong>Write</strong>
+					<span>Send typed values</span>
+				</a>
+				<a class="action-menu-item" href="/devices/{{.Device.ID}}/tasks/new/fota?organisation_id={{.Device.OrganisationID}}">
+					<strong>FOTA</strong>
+					<span>Install a firmware release</span>
+				</a>
+			</nav>
+		</details>
 	</header>
 
 	<div class="data-table-wrapper">

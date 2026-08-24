@@ -225,6 +225,190 @@ func TestDeviceTaskPostCreatesFOTATaskWithReleaseID(t *testing.T) {
 	}
 }
 
+func TestDeviceTaskNewRendersOneTaskTypePerScreen(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := db.Open(ctx, db.Config{
+		Dialect: db.DialectSQLite,
+		DSN:     filepath.Join(t.TempDir(), "anchor.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	organisationID, err := store.CreateOrganisation(ctx, domain.Organisation{Name: "Test Org"})
+	if err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	userID, err := store.CreateUser(ctx, domain.User{
+		Email:        "member@example.com",
+		Name:         "Member",
+		PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.AddUserToOrganisation(ctx, domain.OrganisationMembership{
+		UserID:         userID,
+		OrganisationID: organisationID,
+	}); err != nil {
+		t.Fatalf("add user to organisation: %v", err)
+	}
+	deviceModelID := testDeviceModelID(t, store, organisationID, "Sensor")
+	if err := store.SaveDeviceWithMQTTCredential(ctx, domain.DeviceWithMQTTCredential{
+		Device: domain.Device{
+			ID:               "device-001",
+			OrganisationID:   organisationID,
+			DeviceModelID:    deviceModelID,
+			ModelName:        "Sensor",
+			SoftwareVersions: domain.SoftwareVersions{},
+		},
+		Credential: domain.DeviceMQTTCredential{
+			DeviceID:     "device-001",
+			Username:     "device-001",
+			PasswordHash: "hash",
+			Enabled:      true,
+		},
+	}); err != nil {
+		t.Fatalf("save device: %v", err)
+	}
+	if _, err := store.CreateSoftwareRelease(ctx, domain.SoftwareRelease{
+		OrganisationID:      organisationID,
+		DeviceModelID:       deviceModelID,
+		Version:             "1.2.3",
+		ArtifactPath:        "1/firmware.bin",
+		ArtifactFilename:    "firmware.bin",
+		ArtifactContentType: "application/octet-stream",
+		ArtifactSizeBytes:   4,
+	}); err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+
+	server := testServerWithTemplates(t, store)
+	user := domain.User{ID: userID, Email: "member@example.com"}
+	tests := []struct {
+		taskType string
+		field    string
+		absent   []string
+	}{
+		{taskType: "read", field: `name="read_paths"`, absent: []string{`name="write_values"`, `name="release_id"`}},
+		{taskType: "write", field: `name="write_values"`, absent: []string{`name="read_paths"`, `name="release_id"`}},
+		{taskType: "fota", field: `name="release_id"`, absent: []string{`name="read_paths"`, `name="write_values"`}},
+	}
+	for _, test := range tests {
+		t.Run(test.taskType, func(t *testing.T) {
+			target := "/devices/device-001/tasks/new/" + test.taskType + "?organisation_id=" + strconv.FormatInt(organisationID, 10)
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			req.SetPathValue("deviceID", "device-001")
+			req.SetPathValue("taskType", test.taskType)
+			req = req.WithContext(context.WithValue(req.Context(), userContextKey, user))
+			res := httptest.NewRecorder()
+
+			server.deviceTaskNew(res, req)
+
+			if res.Code != http.StatusOK {
+				t.Fatalf("expected %s launch screen, got %d body=%q", test.taskType, res.Code, res.Body.String())
+			}
+			body := res.Body.String()
+			if !strings.Contains(body, `name="task_type" value="`+test.taskType+`"`) || !strings.Contains(body, test.field) {
+				t.Fatalf("expected only the %s task form, got %q", test.taskType, body)
+			}
+			for _, absent := range test.absent {
+				if strings.Contains(body, absent) {
+					t.Fatalf("did not expect %s on the %s launch screen", absent, test.taskType)
+				}
+			}
+		})
+	}
+}
+
+func TestDeviceTasksLaunchMenuLinksToTypedScreens(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{templates: parseTemplates()}
+	res := httptest.NewRecorder()
+	server.renderDeviceTasks(res, deviceDetailPageData{Device: deviceDetailView{
+		ID:             "device-001",
+		OrganisationID: 42,
+	}})
+
+	body := res.Body.String()
+	for _, taskType := range []string{"read", "write", "fota"} {
+		want := `href="/devices/device-001/tasks/new/` + taskType + `?organisation_id=42"`
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected launch menu link %q, got %q", want, body)
+		}
+	}
+}
+
+func TestCampaignNewRendersOneTaskTypePerScreen(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{templates: parseTemplates()}
+	tests := []struct {
+		taskType string
+		label    string
+		field    string
+		absent   []string
+	}{
+		{taskType: "read", label: "Read", field: `name="read_paths"`, absent: []string{`name="write_values"`, `name="release_id"`}},
+		{taskType: "write", label: "Write", field: `name="write_values"`, absent: []string{`name="read_paths"`, `name="release_id"`}},
+		{taskType: "fota", label: "FOTA", field: `name="release_id"`, absent: []string{`name="read_paths"`, `name="write_values"`}},
+	}
+	for _, test := range tests {
+		t.Run(test.taskType, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			server.renderCampaignNew(res, campaignSelectionPageData{
+				Shell: shellPageData{
+					SelectedOrganisationID: 42,
+					Organisations:          []domain.Organisation{{ID: 42, Name: "Test Org"}},
+				},
+				Devices:     []campaignDevicePreviewView{{ID: "device-001", ModelName: "Sensor"}},
+				Releases:    []releaseOptionView{{ID: 7, Label: "Sensor · 1.2.3"}},
+				TaskType:    test.taskType,
+				TaskLabel:   test.label,
+				TaskHelp:    "Task help.",
+				WriteValues: `[{"path":"config.sample_interval","value":60}]`,
+				TTLDays:     7,
+				CanUseFOTA:  true,
+			})
+
+			if res.Code != http.StatusOK {
+				t.Fatalf("expected %s campaign screen, got %d body=%q", test.taskType, res.Code, res.Body.String())
+			}
+			body := res.Body.String()
+			if !strings.Contains(body, `name="task_type" value="`+test.taskType+`"`) || !strings.Contains(body, test.field) {
+				t.Fatalf("expected only the %s campaign form, got %q", test.taskType, body)
+			}
+			for _, absent := range test.absent {
+				if strings.Contains(body, absent) {
+					t.Fatalf("did not expect %s on the %s campaign screen", absent, test.taskType)
+				}
+			}
+		})
+	}
+}
+
+func TestDeviceCampaignMenuSubmitsSelectedTaskType(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{templates: parseTemplates()}
+	res := httptest.NewRecorder()
+	server.renderDevices(res, httptest.NewRequest(http.MethodGet, "/devices?organisation_id=42", nil), devicesPageData{
+		Shell: shellPageData{SelectedOrganisationID: 42},
+	})
+
+	body := res.Body.String()
+	for _, taskType := range []string{"read", "write", "fota"} {
+		want := `name="task_type" value="` + taskType + `" form="campaign-selection-form"`
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected campaign menu submit control %q, got %q", want, body)
+		}
+	}
+}
+
 func TestDeviceModelsPostCreatesModelWithExpectedRelease(t *testing.T) {
 	t.Parallel()
 

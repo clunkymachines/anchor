@@ -1,9 +1,9 @@
-{{template "app_page_start" (dict "Title" "Create campaign - Anchor" "Shell" .Shell "Active" "campaigns" "OrganisationAction" "/campaigns" "SearchPlaceholder" "Search campaigns" "DeviceBadge" "" "ReleaseBadge" "")}}
+{{template "app_page_start" (dict "Title" (printf "Create %s campaign - Anchor" .TaskLabel) "Shell" .Shell "Active" "campaigns" "OrganisationAction" "/campaigns" "SearchPlaceholder" "Search campaigns" "DeviceBadge" "" "ReleaseBadge" "")}}
 				<main class="app-workspace">
 					<header class="page-header">
 						<div>
-							<h1 class="page-title">Create campaign</h1>
-							<p class="page-subtitle">{{len .Devices}} selected devices</p>
+							<h1 class="page-title">Create {{.TaskLabel}} campaign</h1>
+							<p class="page-subtitle">{{len .Devices}} selected devices · {{.TaskHelp}}</p>
 						</div>
 						<div class="page-actions">
 							<a class="button button-secondary" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Change selection</a>
@@ -29,12 +29,13 @@
 					<section class="card form-card">
 						<header class="card-header">
 							<div>
-								<h2 class="card-title">Task</h2>
+								<h2 class="card-title">{{.TaskLabel}} task</h2>
 								<p class="card-subtitle">Creates one queued task per selected device.</p>
 							</div>
 						</header>
 						<form class="card-body device-task-form" method="post" action="/campaigns">
 							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+							<input type="hidden" name="task_type" value="{{.TaskType}}">
 							{{range .Devices}}<input type="hidden" name="device_id" value="{{.ID}}">{{end}}
 							<label class="field">
 								<span class="field-label">Name</span>
@@ -44,19 +45,19 @@
 								<span class="field-label">TTL days</span>
 								<input class="input" type="number" name="ttl_days" min="1" step="1" value="{{.TTLDays}}" required>
 							</label>
-							<div class="tabs" aria-label="Task type">
-								<label class="tab-item"><input type="radio" name="task_type" value="read" checked> Read</label>
-								<label class="tab-item"><input type="radio" name="task_type" value="write"> Write</label>
-								<label class="tab-item {{if not .CanUseFOTA}}is-disabled{{end}}"><input type="radio" name="task_type" value="fota" {{if not .CanUseFOTA}}disabled{{end}}> FOTA</label>
-							</div>
+							{{if eq .TaskType "read"}}
 							<label class="field">
 								<span class="field-label">Read paths</span>
-								<textarea class="textarea task-textarea" name="read_paths" placeholder="battery.percent&#10;firmware.version">{{.ReadPaths}}</textarea>
+								<textarea class="textarea task-textarea" name="read_paths" required placeholder="battery.percent&#10;firmware.version">{{.ReadPaths}}</textarea>
+								<span class="field-help">Enter one path per line, up to 32 paths.</span>
 							</label>
+							{{else if eq .TaskType "write"}}
 							<label class="field">
 								<span class="field-label">Write values</span>
-								<textarea class="textarea task-textarea task-json-textarea" name="write_values">{{.WriteValues}}</textarea>
+								<textarea class="textarea task-textarea task-json-textarea" name="write_values" required>{{.WriteValues}}</textarea>
+								<span class="field-help">Use a JSON array of path and typed value objects, up to 32 values.</span>
 							</label>
+							{{else}}
 							<label class="field">
 								<span class="field-label">FOTA release</span>
 								<select class="select" name="release_id" {{if not .CanUseFOTA}}disabled{{end}}>
@@ -68,8 +69,10 @@
 								</select>
 								{{if .FOTAHelpText}}<span class="field-help">{{.FOTAHelpText}}</span>{{end}}
 							</label>
+							{{end}}
 							<div class="form-actions">
-								<button class="button button-primary" type="submit">Start campaign</button>
+								<a class="button button-ghost" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Cancel</a>
+								<button class="button button-primary" type="submit" {{if and (eq .TaskType "fota") (not .CanUseFOTA)}}disabled{{end}}>Start {{.TaskLabel}} campaign</button>
 							</div>
 						</form>
 					</section>

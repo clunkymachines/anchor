@@ -236,10 +236,9 @@ function deviceSelectionInputs(root = document) {
 function updateDeviceSelectionState(root = document) {
   const checkboxes = deviceSelectionInputs(root);
   const selectedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
-  const submit = root.querySelector("[data-campaign-submit]");
-  if (submit) {
+  all("[data-campaign-submit]", root).forEach((submit) => {
     submit.disabled = selectedCount === 0;
-  }
+  });
 
   const selectAll = root.querySelector("[data-select-all-visible]");
   if (selectAll) {

@@ -1130,11 +1130,8 @@ a {
   gap: 14px;
 }
 
-.task-launch-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
+.task-launch-form-card {
+  max-width: 720px;
 }
 
 .task-textarea {
@@ -1144,6 +1141,77 @@ a {
 .task-json-textarea {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+}
+
+.action-menu {
+  position: relative;
+}
+
+.action-menu > summary {
+  list-style: none;
+}
+
+.action-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.action-menu-chevron {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.action-menu[open] .action-menu-chevron {
+  transform: rotate(180deg);
+}
+
+.action-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  width: 250px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-floating);
+}
+
+.action-menu-item {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+}
+
+.action-menu-item:hover,
+.action-menu-item:focus-visible {
+  background: var(--surface-panel-muted);
+}
+
+.action-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.action-menu-item strong {
+  font-size: var(--text-sm);
+}
+
+.action-menu-item span {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
 .form-grid {
@@ -1768,8 +1836,7 @@ a {
   .grid-cols-3,
   .grid-cols-4,
   .device-detail-top-grid,
-  .campaign-detail-grid,
-  .task-launch-grid {
+  .campaign-detail-grid {
     grid-template-columns: 1fr;
   }
 

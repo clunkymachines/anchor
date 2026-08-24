@@ -56,7 +56,26 @@
 								<p class="card-subtitle">{{.DeviceInventoryLabel}}{{if .DeviceInventorySuffix}} · {{.DeviceInventorySuffix}}{{end}}</p>
 							</div>
 							<div class="page-actions">
-								<button class="button button-primary" type="submit" form="campaign-selection-form" data-campaign-submit disabled>Create campaign</button>
+								<details class="action-menu">
+									<summary class="button button-primary">
+										Create campaign
+										<span class="action-menu-chevron" aria-hidden="true">{{template "icon_chevron_down" .}}</span>
+									</summary>
+									<div class="action-menu-popover" role="group" aria-label="Choose campaign task type">
+										<button class="action-menu-item" type="submit" name="task_type" value="read" form="campaign-selection-form" data-campaign-submit disabled>
+											<strong>Read</strong>
+											<span>Fetch current values</span>
+										</button>
+										<button class="action-menu-item" type="submit" name="task_type" value="write" form="campaign-selection-form" data-campaign-submit disabled>
+											<strong>Write</strong>
+											<span>Send typed values</span>
+										</button>
+										<button class="action-menu-item" type="submit" name="task_type" value="fota" form="campaign-selection-form" data-campaign-submit disabled>
+											<strong>FOTA</strong>
+											<span>Install a firmware release</span>
+										</button>
+									</div>
+								</details>
 								<button class="button button-secondary" type="button">Refresh</button>
 							</div>
 						</header>
