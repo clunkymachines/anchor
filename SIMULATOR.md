@@ -48,5 +48,49 @@ Use `go run ./cmd/fleet-sim -help` for the complete flag reference. Every flag a
 | `ANCHOR_SIM_CONNECT_CONCURRENCY` | `25` | Maximum concurrent MQTT connections |
 | `ANCHOR_SIM_LOG_INTERVAL` | `30s` | Aggregate metrics log interval |
 | `ANCHOR_SIM_PROVISION_TIMEOUT` | `10m` | Bulk provisioning timeout |
+| `ANCHOR_SIM_TASK_PROFILE` | `normal` | Task behavior profile: `normal` or `demo-rollout` |
+| `ANCHOR_SIM_TASK_START_DELAY` | `0s` | Delay before reporting a task as in progress |
+| `ANCHOR_SIM_TASK_DURATION_MIN` | `0s` | Minimum visible task execution duration |
+| `ANCHOR_SIM_TASK_DURATION_MAX` | `0s` | Maximum visible task execution duration |
 
 Start with a small fleet and confirm device connectivity and telemetry in Anchor before increasing `-fleet-size`. The default is 1,000 devices and the maximum is 2,000, but broker, database, and host limits still apply.
+
+## Run a Deterministic Rollout Demo
+
+Start Anchor with an absolute firmware download base URL so simulated MQTT
+devices can download release artifacts:
+
+```sh
+ANCHOR_FOTA_DOWNLOAD_BASE_URL=http://127.0.0.1:8080 go run .
+```
+
+Then run a small fleet with the rollout demo profile:
+
+```sh
+go run ./cmd/fleet-sim \
+  -anchor-url http://127.0.0.1:8080 \
+  -api-token "$ANCHOR_SIM_API_TOKEN" \
+  -mqtt-url mqtt://127.0.0.1:1883 \
+  -organisation-id 1 \
+  -model-id 1 \
+  -fleet-size 10 \
+  -secret local-simulator-secret \
+  -task-profile demo-rollout
+```
+
+`demo-rollout` applies visible defaults of a 750 ms start delay and a
+deterministic 2–5 second execution time. For every five consecutive simulated
+devices, FOTA results repeat this pattern:
+
+1. success;
+2. success;
+3. failure with a simulated checksum mismatch;
+4. success;
+5. failure with a message confirming an automatic rollback to the previously
+   reported firmware.
+
+Anchor's current MQTT task contract has no separate `rolled_back` terminal
+status, so a recovered rollback is reported as `failure` with an explicit
+status message. Read and write tasks keep their normal results but use the same
+visible timing while this profile is active. Customize the delays with the
+`-task-start-delay`, `-task-duration-min`, and `-task-duration-max` flags.

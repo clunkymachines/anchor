@@ -57,6 +57,10 @@ func configFromFlags() (sim.Config, error) {
 		connectConcurrency = flag.Int("connect-concurrency", envInt("ANCHOR_SIM_CONNECT_CONCURRENCY", 25), "maximum concurrent MQTT connects")
 		logInterval        = flag.Duration("log-interval", envDuration("ANCHOR_SIM_LOG_INTERVAL", sim.DefaultLogInterval), "aggregate metrics log interval")
 		provisionTimeout   = flag.Duration("provision-timeout", envDuration("ANCHOR_SIM_PROVISION_TIMEOUT", sim.DefaultProvisionTimeout), "bulk provisioning HTTP timeout")
+		taskProfile        = flag.String("task-profile", envOrDefault("ANCHOR_SIM_TASK_PROFILE", sim.TaskProfileNormal), "task behavior profile: normal or demo-rollout")
+		taskStartDelay     = flag.Duration("task-start-delay", envDuration("ANCHOR_SIM_TASK_START_DELAY", 0), "delay before reporting a task in progress")
+		taskDurationMin    = flag.Duration("task-duration-min", envDuration("ANCHOR_SIM_TASK_DURATION_MIN", 0), "minimum visible task execution duration")
+		taskDurationMax    = flag.Duration("task-duration-max", envDuration("ANCHOR_SIM_TASK_DURATION_MAX", 0), "maximum visible task execution duration")
 	)
 	flag.Parse()
 
@@ -80,6 +84,10 @@ func configFromFlags() (sim.Config, error) {
 		ConnectConcurrency: *connectConcurrency,
 		LogInterval:        *logInterval,
 		ProvisionTimeout:   *provisionTimeout,
+		TaskProfile:        *taskProfile,
+		TaskStartDelay:     *taskStartDelay,
+		TaskDurationMin:    *taskDurationMin,
+		TaskDurationMax:    *taskDurationMax,
 		Logger:             slog.Default(),
 	}, nil
 }

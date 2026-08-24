@@ -42,9 +42,26 @@ const (
 	// DefaultLogInterval controls periodic simulator metric logging.
 	DefaultLogInterval = 30 * time.Second
 	// DefaultProvisionTimeout bounds fleet provisioning requests.
-	DefaultProvisionTimeout   = 10 * time.Minute
+	DefaultProvisionTimeout = 10 * time.Minute
+	// TaskProfileNormal preserves the simulator's existing task behavior.
+	TaskProfileNormal = "normal"
+	// TaskProfileDemoRollout produces deterministic mixed FOTA results for demos.
+	TaskProfileDemoRollout = "demo-rollout"
+	// DefaultDemoTaskStartDelay keeps a demo task pending briefly before it starts.
+	DefaultDemoTaskStartDelay = 750 * time.Millisecond
+	// DefaultDemoTaskDurationMin is the shortest visible demo task execution.
+	DefaultDemoTaskDurationMin = 2 * time.Second
+	// DefaultDemoTaskDurationMax is the longest visible demo task execution.
+	DefaultDemoTaskDurationMax = 5 * time.Second
+
 	defaultConnectTimeout     = 15 * time.Second
 	defaultConnectConcurrency = 25
+)
+
+const (
+	demoFOTAOutcomeSuccess  = "success"
+	demoFOTAOutcomeFailure  = "failure"
+	demoFOTAOutcomeRollback = "rollback"
 )
 
 // Config describes the Anchor API, MQTT broker, fleet identity, and pacing used
@@ -67,6 +84,10 @@ type Config struct {
 	ConnectConcurrency int
 	LogInterval        time.Duration
 	ProvisionTimeout   time.Duration
+	TaskProfile        string
+	TaskStartDelay     time.Duration
+	TaskDurationMin    time.Duration
+	TaskDurationMax    time.Duration
 	HTTPClient         *http.Client
 	Logger             *slog.Logger
 }
@@ -94,6 +115,7 @@ type Metrics struct {
 	TaskMessages        atomic.Int64
 	TaskSuccesses       atomic.Int64
 	TaskFailures        atomic.Int64
+	TaskRollbacks       atomic.Int64
 	PublishLatencyNanos atomic.Int64
 }
 
@@ -132,14 +154,15 @@ type Runtime struct {
 }
 
 type deviceRuntime struct {
-	def      DeviceDefinition
-	cfg      Config
-	manager  *autopaho.ConnectionManager
-	stateMu  sync.Mutex
-	state    map[string]any
-	started  time.Time
-	sequence uint64
-	metrics  *Metrics
+	def        DeviceDefinition
+	cfg        Config
+	manager    *autopaho.ConnectionManager
+	stateMu    sync.Mutex
+	state      map[string]any
+	started    time.Time
+	sequence   uint64
+	fleetIndex int
+	metrics    *Metrics
 }
 
 type taskEnvelope struct {
@@ -174,6 +197,24 @@ func NormalizeConfig(cfg Config) Config {
 	}
 	if cfg.ProvisionTimeout == 0 {
 		cfg.ProvisionTimeout = DefaultProvisionTimeout
+	}
+	cfg.TaskProfile = strings.ToLower(strings.TrimSpace(cfg.TaskProfile))
+	if cfg.TaskProfile == "" {
+		cfg.TaskProfile = TaskProfileNormal
+	}
+	if cfg.TaskProfile == TaskProfileDemoRollout {
+		if cfg.TaskStartDelay == 0 {
+			cfg.TaskStartDelay = DefaultDemoTaskStartDelay
+		}
+		if cfg.TaskDurationMin == 0 {
+			cfg.TaskDurationMin = DefaultDemoTaskDurationMin
+		}
+		if cfg.TaskDurationMax == 0 {
+			cfg.TaskDurationMax = DefaultDemoTaskDurationMax
+		}
+	}
+	if cfg.TaskDurationMin > 0 && cfg.TaskDurationMax == 0 {
+		cfg.TaskDurationMax = cfg.TaskDurationMin
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: cfg.ProvisionTimeout}
@@ -213,6 +254,17 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.ConnectConcurrency <= 0 {
 		return errors.New("connect concurrency must be positive")
+	}
+	switch cfg.TaskProfile {
+	case TaskProfileNormal, TaskProfileDemoRollout:
+	default:
+		return fmt.Errorf("task profile must be %q or %q", TaskProfileNormal, TaskProfileDemoRollout)
+	}
+	if cfg.TaskStartDelay < 0 || cfg.TaskDurationMin < 0 || cfg.TaskDurationMax < 0 {
+		return errors.New("task delays cannot be negative")
+	}
+	if cfg.TaskDurationMax < cfg.TaskDurationMin {
+		return errors.New("task duration maximum cannot be shorter than the minimum")
 	}
 	return nil
 }
@@ -258,13 +310,14 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		cfg:     cfg,
 		devices: make([]*deviceRuntime, 0, len(defs)),
 	}
-	for _, def := range defs {
+	for fleetIndex, def := range defs {
 		runtime.devices = append(runtime.devices, &deviceRuntime{
-			def:     def,
-			cfg:     cfg,
-			state:   defaultWritableState(),
-			started: time.Now(),
-			metrics: &runtime.metrics,
+			def:        def,
+			cfg:        cfg,
+			state:      defaultWritableState(),
+			started:    time.Now(),
+			fleetIndex: fleetIndex,
+			metrics:    &runtime.metrics,
 		})
 	}
 	return runtime, nil
@@ -381,7 +434,13 @@ func (r *Runtime) connectAll(ctx context.Context) error {
 			return err
 		}
 	}
-	r.cfg.Logger.Info("fleet connected", "devices", len(r.devices))
+	r.cfg.Logger.Info("fleet connected",
+		"devices", len(r.devices),
+		"task_profile", r.cfg.TaskProfile,
+		"task_start_delay", r.cfg.TaskStartDelay,
+		"task_duration_min", r.cfg.TaskDurationMin,
+		"task_duration_max", r.cfg.TaskDurationMax,
+	)
 	return nil
 }
 
@@ -418,6 +477,7 @@ func (r *Runtime) startMetricsLogger(ctx context.Context) {
 					"task_messages", r.metrics.TaskMessages.Load(),
 					"task_successes", r.metrics.TaskSuccesses.Load(),
 					"task_failures", r.metrics.TaskFailures.Load(),
+					"task_rollbacks", r.metrics.TaskRollbacks.Load(),
 					"avg_publish_latency_ms", time.Duration(avgLatency).Milliseconds(),
 				)
 			}
@@ -552,7 +612,10 @@ func (d *deviceRuntime) handleTask(ctx context.Context, payload []byte) {
 	if err := cbor.Unmarshal(payload, &task); err != nil || task.Task <= 0 {
 		return
 	}
-	_ = d.publishTaskStatus(ctx, task.Task, "in_progress", "task received")
+	if !waitForTaskPhase(ctx, d.cfg.TaskStartDelay) {
+		return
+	}
+	_ = d.publishTaskStatus(ctx, task.Task, "in_progress", taskProgressMessage(task.Type))
 	var err error
 	switch task.Type {
 	case domain.TaskTypeRead:
@@ -564,13 +627,78 @@ func (d *deviceRuntime) handleTask(ctx context.Context, payload []byte) {
 	default:
 		err = fmt.Errorf("unsupported task type %q", task.Type)
 	}
+	if !waitForTaskPhase(ctx, d.taskDuration(task.Task)) {
+		return
+	}
 	if err != nil {
 		d.metrics.TaskFailures.Add(1)
 		_ = d.publishTaskStatus(ctx, task.Task, "failure", err.Error())
 		return
 	}
+	if task.Type == domain.TaskTypeFOTA && d.cfg.TaskProfile == TaskProfileDemoRollout {
+		switch demoFOTAOutcome(d.fleetIndex) {
+		case demoFOTAOutcomeFailure:
+			d.metrics.TaskFailures.Add(1)
+			_ = d.publishTaskStatus(ctx, task.Task, "failure", "Firmware validation failed: simulated checksum mismatch.")
+			return
+		case demoFOTAOutcomeRollback:
+			d.metrics.TaskFailures.Add(1)
+			d.metrics.TaskRollbacks.Add(1)
+			message := fmt.Sprintf("Installation failed. Automatic rollback completed to %s.", d.def.Firmware)
+			_ = d.publishTaskStatus(ctx, task.Task, "failure", message)
+			return
+		}
+	}
 	d.metrics.TaskSuccesses.Add(1)
 	_ = d.publishTaskStatus(ctx, task.Task, "success", "")
+}
+
+func taskProgressMessage(taskType string) string {
+	if taskType == domain.TaskTypeFOTA {
+		return "downloading firmware"
+	}
+	return "task received"
+}
+
+func waitForTaskPhase(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (d *deviceRuntime) taskDuration(taskID int64) time.Duration {
+	minimum := d.cfg.TaskDurationMin
+	maximum := d.cfg.TaskDurationMax
+	if maximum <= minimum {
+		return minimum
+	}
+	spread := maximum - minimum
+	key := d.def.ID + ":" + strconv.FormatInt(taskID, 10)
+	return minimum + time.Duration(stableHash(key)%uint64(spread))
+}
+
+// demoFOTAOutcome repeats a compact pattern so every five consecutive devices
+// contain three successes, one failure, and one recovered rollback.
+func demoFOTAOutcome(fleetIndex int) string {
+	pattern := [...]string{
+		demoFOTAOutcomeSuccess,
+		demoFOTAOutcomeSuccess,
+		demoFOTAOutcomeFailure,
+		demoFOTAOutcomeSuccess,
+		demoFOTAOutcomeRollback,
+	}
+	if fleetIndex < 0 {
+		fleetIndex = -fleetIndex
+	}
+	return pattern[fleetIndex%len(pattern)]
 }
 
 func (d *deviceRuntime) handleReadTask(ctx context.Context, task taskEnvelope) error {

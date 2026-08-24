@@ -36,6 +36,90 @@ func TestGenerateFleetIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestDemoRolloutProfileDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := NormalizeConfig(Config{TaskProfile: TaskProfileDemoRollout})
+	if cfg.TaskStartDelay != DefaultDemoTaskStartDelay {
+		t.Fatalf("task start delay=%s", cfg.TaskStartDelay)
+	}
+	if cfg.TaskDurationMin != DefaultDemoTaskDurationMin || cfg.TaskDurationMax != DefaultDemoTaskDurationMax {
+		t.Fatalf("task duration range=%s..%s", cfg.TaskDurationMin, cfg.TaskDurationMax)
+	}
+}
+
+func TestNormalTaskProfilePreservesImmediateBehavior(t *testing.T) {
+	t.Parallel()
+
+	cfg := NormalizeConfig(Config{})
+	if cfg.TaskProfile != TaskProfileNormal {
+		t.Fatalf("task profile=%q", cfg.TaskProfile)
+	}
+	if cfg.TaskStartDelay != 0 || cfg.TaskDurationMin != 0 || cfg.TaskDurationMax != 0 {
+		t.Fatalf("normal profile unexpectedly delays tasks: start=%s range=%s..%s", cfg.TaskStartDelay, cfg.TaskDurationMin, cfg.TaskDurationMax)
+	}
+}
+
+func TestDemoFOTAOutcomePattern(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		demoFOTAOutcomeSuccess,
+		demoFOTAOutcomeSuccess,
+		demoFOTAOutcomeFailure,
+		demoFOTAOutcomeSuccess,
+		demoFOTAOutcomeRollback,
+		demoFOTAOutcomeSuccess,
+	}
+	for index, expected := range want {
+		if got := demoFOTAOutcome(index); got != expected {
+			t.Fatalf("outcome %d=%q, want %q", index, got, expected)
+		}
+	}
+}
+
+func TestTaskDurationIsDeterministicAndBounded(t *testing.T) {
+	t.Parallel()
+
+	device := &deviceRuntime{
+		def: DeviceDefinition{ID: "sim-3"},
+		cfg: Config{TaskDurationMin: 2 * time.Second, TaskDurationMax: 5 * time.Second},
+	}
+	first := device.taskDuration(42)
+	second := device.taskDuration(42)
+	if first != second {
+		t.Fatalf("task duration changed from %s to %s", first, second)
+	}
+	if first < 2*time.Second || first >= 5*time.Second {
+		t.Fatalf("task duration %s outside configured range", first)
+	}
+}
+
+func TestConfigRejectsUnknownTaskProfileAndInvalidDurationRange(t *testing.T) {
+	t.Parallel()
+
+	base := Config{
+		AnchorBaseURL:  "http://anchor",
+		APIToken:       "token",
+		MQTTBrokerURL:  "mqtt://broker",
+		DeviceModelID:  1,
+		OrganisationID: 1,
+		FleetSize:      1,
+		Secret:         "secret",
+	}
+	unknown := NormalizeConfig(base)
+	unknown.TaskProfile = "surprise"
+	if err := unknown.Validate(); err == nil {
+		t.Fatal("expected unknown task profile to fail validation")
+	}
+	invalidRange := NormalizeConfig(base)
+	invalidRange.TaskDurationMin = 5 * time.Second
+	invalidRange.TaskDurationMax = 2 * time.Second
+	if err := invalidRange.Validate(); err == nil {
+		t.Fatal("expected invalid task duration range to fail validation")
+	}
+}
+
 func TestTelemetryCBORUsesNestedObjects(t *testing.T) {
 	t.Parallel()
 
