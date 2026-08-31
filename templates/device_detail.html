@@ -38,6 +38,14 @@
 										<dd class="key-value-value">{{.Device.ModelName}}</dd>
 									</div>
 									<div class="key-value-row">
+										<dt class="key-value-label">Tags</dt>
+										<dd class="key-value-value tag-list">{{range .Device.Tags}}<form class="tag-chip-form" method="post" action="/devices/{{$.Device.ID}}/tags"><input type="hidden" name="organisation_id" value="{{$.Device.OrganisationID}}"><input type="hidden" name="operation" value="remove"><input type="hidden" name="tag" value="{{.}}"><button class="tag-chip" type="submit" title="Remove tag {{.}}">{{.}} ×</button></form>{{else}}<span class="muted-text">None</span>{{end}}</dd>
+									</div>
+									<div class="key-value-row">
+										<dt class="key-value-label">Add tag</dt>
+										<dd class="key-value-value"><form class="inline-form" method="post" action="/devices/{{.Device.ID}}/tags"><input type="hidden" name="organisation_id" value="{{.Device.OrganisationID}}"><input type="hidden" name="operation" value="add"><input class="input" name="tag" list="detail-tag-suggestions" maxlength="64" required placeholder="beta"><button class="button button-secondary button-small" type="submit">Add</button></form><datalist id="detail-tag-suggestions">{{range .TagSuggestions}}<option value="{{.}}">{{end}}</datalist></dd>
+									</div>
+									<div class="key-value-row">
 										<dt class="key-value-label">Protocol</dt>
 										<dd class="key-value-value"><span class="protocol-pill">{{.Device.ProtocolLabel}}</span></dd>
 									</div>

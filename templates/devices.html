@@ -1,4 +1,4 @@
-{{template "app_page_start" (dict "Title" "Devices - Anchor" "Shell" .Shell "Active" "devices" "OrganisationAction" "/devices" "SearchAction" "/devices" "SearchPlaceholder" "Search devices" "SearchQuery" .Query "SearchPageSize" .Pagination.PageSize "DeviceBadge" (printf "%d" .Metrics.TotalDevices) "ReleaseBadge" "")}}
+{{template "app_page_start" (dict "Title" "Devices - Anchor" "Shell" .Shell "Active" "devices" "OrganisationAction" "/devices" "HideSearch" true "DeviceBadge" (printf "%d" .Metrics.TotalDevices) "ReleaseBadge" "")}}
 				<main class="app-workspace">
 					<header class="page-header">
 						<div>
@@ -49,7 +49,7 @@
 						</div>
 					</section>
 
-					<section class="card data-table-card">
+					<section class="card data-table-card device-inventory-card">
 						<header class="card-header">
 							<div>
 								<h2 class="card-title">Device inventory</h2>
@@ -58,10 +58,11 @@
 							<div class="page-actions">
 								<details class="action-menu">
 									<summary class="button button-primary">
-										Create campaign
+										<span data-campaign-selection-label>Create campaign</span>
 										<span class="action-menu-chevron" aria-hidden="true">{{template "icon_chevron_down" .}}</span>
 									</summary>
 									<div class="action-menu-popover" role="group" aria-label="Choose campaign task type">
+										<p class="action-menu-help" data-campaign-selection-hint>Select devices in the table first.</p>
 										<button class="action-menu-item" type="submit" name="task_type" value="read" form="campaign-selection-form" data-campaign-submit disabled>
 											<strong>Read</strong>
 											<span>Fetch current values</span>
@@ -76,9 +77,51 @@
 										</button>
 									</div>
 								</details>
-								<button class="button button-secondary" type="button">Refresh</button>
+								<a class="button button-secondary" href="{{.ReturnURL}}">Refresh</a>
 							</div>
 						</header>
+						<form class="device-filters" method="get" action="/devices" data-device-filters aria-label="Filter devices">
+							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+							<input type="hidden" name="page_size" value="{{.Pagination.PageSize}}">
+							<div class="device-filter-controls">
+								<div class="search-field device-filter-search">
+									<label class="sr-only" for="device-filter-search">Search devices</label>
+									<span aria-hidden="true">{{template "icon_search" .}}</span>
+									<input id="device-filter-search" type="search" name="q" value="{{.Query}}" placeholder="Search devices…" autocomplete="off" spellcheck="false">
+								</div>
+								<details class="action-menu tag-filter" data-tag-filter>
+									<summary class="button button-secondary" aria-label="Filter by tags">
+										Tags <span class="filter-count" data-tag-filter-count {{if not .ActiveTags}}hidden{{end}}>{{len .ActiveTags}}</span>
+										<span class="action-menu-chevron" aria-hidden="true">{{template "icon_chevron_down" .}}</span>
+									</summary>
+									<div class="action-menu-popover tag-filter-popover">
+										<label class="sr-only" for="tag-filter-search">Search tags</label>
+										<input class="input" id="tag-filter-search" type="search" placeholder="Search tags…" autocomplete="off" spellcheck="false" data-tag-filter-search>
+										<p class="tag-filter-help">Devices must match all selected tags.</p>
+										<div class="tag-filter-options" role="group" aria-label="Tags">
+											{{range .TagOptions}}<label class="tag-filter-option"><input type="checkbox" name="tag" value="{{.Name}}" {{if .Selected}}checked{{end}}><span>{{.Name}}</span></label>{{end}}
+										</div>
+										<p class="tag-filter-empty" data-tag-filter-empty {{if .TagOptions}}hidden{{end}}>No tags available.</p>
+										<button class="button button-secondary" type="button" data-tag-filter-done>Done</button>
+									</div>
+								</details>
+								<label class="sr-only" for="device-filter-model">Filter by model</label>
+								<select class="select device-filter-model" id="device-filter-model" name="model_id"><option value="">All models</option>{{range .DeviceModels}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select>
+								<button class="button button-secondary" type="submit">Apply filters</button>
+								{{if or .HasFilters .Query}}<a class="button button-ghost" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}&page_size={{.Pagination.PageSize}}">Clear filters</a>{{end}}
+							</div>
+							<div class="tag-list device-filter-tags" data-active-filter-tags {{if not .ActiveTags}}hidden{{end}} aria-label="Selected tag filters">
+								{{range .ActiveTags}}<button class="tag-chip filter-tag-chip" type="button" data-remove-filter-tag="{{.}}" aria-label="Remove {{.}} filter"><span>{{.}}</span><span aria-hidden="true">×</span></button>{{end}}
+							</div>
+						</form>
+						<form class="bulk-tag-bar" method="post" action="/devices/tags" data-bulk-tag-form hidden>
+							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}"><input type="hidden" name="return_to" value="{{.ReturnURL}}">
+							<span class="bulk-selection-count" data-device-selection-count role="status"></span>
+							<label class="sr-only" for="bulk-tag-input">Tag for selected devices</label><input class="input" id="bulk-tag-input" name="tag" list="bulk-tag-suggestions" maxlength="64" required placeholder="Tag, e.g. beta…" autocomplete="off" spellcheck="false">
+							<button class="button button-secondary" name="operation" value="add" type="submit">Add tag</button><button class="button button-ghost" name="operation" value="remove" type="submit">Remove tag</button>
+							<button class="button button-ghost bulk-selection-clear" type="button" data-clear-device-selection>Clear selection</button>
+							<datalist id="bulk-tag-suggestions">{{range .TagSuggestions}}<option value="{{.}}">{{end}}</datalist>
+						</form>
 
 						<form id="campaign-selection-form" method="post" action="/campaigns/new">
 							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
@@ -88,9 +131,10 @@
 							<table class="data-table">
 								<thead>
 									<tr>
-										<th scope="col"><input type="checkbox" data-select-all-visible></th>
+										<th scope="col"><input type="checkbox" data-select-all-visible aria-label="Select all devices on this page"></th>
 										<th scope="col">ID</th>
 										<th scope="col">Model</th>
+										<th scope="col">Tags</th>
 										<th scope="col">Software</th>
 										<th scope="col">CVE</th>
 										<th scope="col">Communication</th>
@@ -101,9 +145,10 @@
 								<tbody>
 									{{range .Devices}}
 										<tr>
-											<td><input type="checkbox" name="device_id" value="{{.ID}}" form="campaign-selection-form"></td>
+											<td><input type="checkbox" name="device_id" value="{{.ID}}" form="campaign-selection-form" aria-label="Select device {{.ID}}"></td>
 											<td class="value-mono"><a class="table-link" href="/devices/{{.ID}}?organisation_id={{$.Shell.SelectedOrganisationID}}">{{.ID}}</a></td>
 											<td>{{.ModelName}}</td>
+											<td><span class="tag-list">{{range $index, $tag := .Tags}}{{if lt $index 3}}<span class="tag-chip">{{$tag}}</span>{{end}}{{end}}{{if gt .TagOverflow 0}}<span class="muted-text">+{{.TagOverflow}}</span>{{end}}</span></td>
 											<td class="value-mono">{{.SoftwareVersions}}</td>
 											<td><span class="status-pill {{.CVEStatus.StatusClass}}">{{.CVEStatus.Label}}{{if .CVEStatus.HighestLabel}} · {{.CVEStatus.HighestLabel}}{{end}}</span></td>
 											<td>
@@ -130,7 +175,7 @@
 										</tr>
 									{{else}}
 										<tr>
-											<td class="empty-table-cell" colspan="8">{{if $.IsEmptyFiltered}}No devices match this search.{{else}}No devices registered yet.{{end}}</td>
+											<td class="empty-table-cell" colspan="9">{{if $.IsEmptyFiltered}}No devices match this search.{{else}}No devices registered yet.{{end}}</td>
 										</tr>
 									{{end}}
 								</tbody>

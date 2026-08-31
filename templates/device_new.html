@@ -32,6 +32,12 @@
 										<input class="input" name="device_id" value="{{.DeviceID}}" placeholder="device-001" required>
 									</label>
 									<label class="field">
+										<span class="field-label">Tags</span>
+										<input class="input" name="tags" value="{{.TagsInput}}" list="device-tag-suggestions" placeholder="beta, factory-floor">
+										<span class="field-help">Comma-separated. Existing tags are suggested; new valid tags are created on assignment.</span>
+									</label>
+									<datalist id="device-tag-suggestions">{{range .TagSuggestions}}<option value="{{.}}">{{end}}</datalist>
+									<label class="field">
 										<span class="field-label">Model</span>
 										<select class="input" name="device_model_id" required data-device-model-select>
 											<option value="">Choose a model</option>

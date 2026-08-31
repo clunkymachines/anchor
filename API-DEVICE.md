@@ -5,6 +5,16 @@ backend—for example, a locally connected device reached through a phone applic
 backend authenticates to Anchor; the device itself has no Anchor transport
 credential.
 
+## Provisioning tags
+
+Both `PUT`/`POST /api/v1/devices/{deviceID}` and
+`POST /api/v1/devices/bulk-upsert` accept an optional `tags` array on each
+device. Omitting `tags` preserves current assignments, supplying an array
+replaces the complete set, and `[]` clears it. Tags are trimmed, lowercased,
+validated, and returned alphabetically in provisioning results. A supplied
+array containing invalid tags, duplicates after normalization, or more than 32
+tags is rejected without changing that device.
+
 ## Setup and credentials
 
 1. In **Organisations**, create an API credential and retain the token shown

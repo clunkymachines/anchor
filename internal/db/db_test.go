@@ -260,7 +260,7 @@ func TestMigrationsOnlyRunOnce(t *testing.T) {
 	defer store.Close()
 
 	testMigration := migration{
-		id: 2,
+		id: 99,
 		statements: []string{
 			`CREATE TABLE migration_test (value TEXT NOT NULL);`,
 			`INSERT INTO migration_test (value) VALUES ('applied');`,
@@ -297,7 +297,7 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 
 	err = store.applyMigrations(ctx, []migration{
 		{
-			id: 2,
+			id: 99,
 			statements: []string{
 				`CREATE TABLE rolled_back_migration (value TEXT NOT NULL);`,
 				`THIS IS NOT SQL;`,
@@ -317,7 +317,7 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 	}
 
 	var migrationCount int
-	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE id = 2`).Scan(&migrationCount); err != nil {
+	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE id = 99`).Scan(&migrationCount); err != nil {
 		t.Fatalf("check failed migration record: %v", err)
 	}
 	if migrationCount != 0 {

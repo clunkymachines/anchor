@@ -366,6 +366,7 @@ func TestCampaignNewRendersOneTaskTypePerScreen(t *testing.T) {
 					Organisations:          []domain.Organisation{{ID: 42, Name: "Test Org"}},
 				},
 				Devices:     []campaignDevicePreviewView{{ID: "device-001", ModelName: "Sensor"}},
+				TargetType:  db.CampaignTargetExplicit,
 				Releases:    []releaseOptionView{{ID: 7, Label: "Sensor · 1.2.3"}},
 				TaskType:    test.taskType,
 				TaskLabel:   test.label,
@@ -401,6 +402,9 @@ func TestDeviceCampaignMenuSubmitsSelectedTaskType(t *testing.T) {
 	})
 
 	body := res.Body.String()
+	if strings.Count(body, `data-campaign-submit disabled`) != 3 {
+		t.Error("all campaign actions must be disabled until devices are selected")
+	}
 	for _, taskType := range []string{"read", "write", "fota"} {
 		want := `name="task_type" value="` + taskType + `" form="campaign-selection-form"`
 		if !strings.Contains(body, want) {

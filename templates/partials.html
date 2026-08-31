@@ -135,11 +135,14 @@
 
 {{define "app_topbar"}}
 <header class="app-topbar">
+	{{if not .HideSearch}}
 	{{if .SearchAction}}
 		<form class="search-field" method="get" action="{{.SearchAction}}">
 			<span aria-hidden="true">{{template "icon_search" .}}</span>
 			<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
 			<input type="hidden" name="page_size" value="{{.SearchPageSize}}">
+			{{range .SearchTags}}<input type="hidden" name="tag" value="{{.}}">{{end}}
+			{{if .SearchModelID}}<input type="hidden" name="model_id" value="{{.SearchModelID}}">{{end}}
 			<input type="search" name="q" value="{{.SearchQuery}}" placeholder="{{.SearchPlaceholder}}">
 		</form>
 	{{else}}
@@ -147,6 +150,7 @@
 			<span aria-hidden="true">{{template "icon_search" .}}</span>
 			<input type="search" name="q" placeholder="{{.SearchPlaceholder}}">
 		</div>
+	{{end}}
 	{{end}}
 	<div class="topbar-actions">
 		<form method="post" action="/logout">
@@ -188,6 +192,8 @@
 			<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
 			{{if .Pagination.Query}}<input type="hidden" name="q" value="{{.Pagination.Query}}">{{end}}
 			{{if .Pagination.Status}}<input type="hidden" name="status" value="{{.Pagination.Status}}">{{end}}
+			{{range .Pagination.Tags}}<input type="hidden" name="tag" value="{{.}}">{{end}}
+			{{if .Pagination.ModelID}}<input type="hidden" name="model_id" value="{{.Pagination.ModelID}}">{{end}}
 			<label>
 				<span>Rows</span>
 				<select name="page_size" onchange="this.form.submit()">

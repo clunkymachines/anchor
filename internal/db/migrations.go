@@ -34,11 +34,49 @@ func (s *Store) migrationsForDialect() ([]migration, error) {
 		return nil, err
 	}
 
+	migration2 := []string{
+		`CREATE TABLE IF NOT EXISTS device_tags (device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY (device_id, tag));`,
+		`CREATE INDEX IF NOT EXISTS idx_device_tags_organisation_tag ON device_tags(organisation_id, tag, device_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_device_tags_device ON device_tags(device_id, tag);`,
+		`ALTER TABLE campaigns ADD COLUMN target_type TEXT NOT NULL DEFAULT 'explicit';`,
+		`ALTER TABLE campaigns ADD COLUMN target_device_ids TEXT NOT NULL DEFAULT '[]';`,
+		`ALTER TABLE campaigns ADD COLUMN target_tag TEXT;`,
+		`ALTER TABLE campaigns ADD COLUMN target_model_id INTEGER;`,
+		`ALTER TABLE campaigns ADD COLUMN target_model_name TEXT;`,
+		`UPDATE campaigns SET target_type = 'explicit', target_device_ids = COALESCE((SELECT json_group_array(device_id) FROM (SELECT device_id FROM device_tasks WHERE campaign_id = campaigns.id ORDER BY device_id)), '[]');`,
+	}
+	if s.isPostgres() {
+		migration2 = []string{
+			`CREATE TABLE IF NOT EXISTS device_tags (device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, organisation_id BIGINT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY (device_id, tag));`,
+			`CREATE INDEX IF NOT EXISTS idx_device_tags_organisation_tag ON device_tags(organisation_id, tag, device_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_device_tags_device ON device_tags(device_id, tag);`,
+			`ALTER TABLE campaigns ADD COLUMN target_type TEXT NOT NULL DEFAULT 'explicit';`,
+			`ALTER TABLE campaigns ADD COLUMN target_device_ids JSONB NOT NULL DEFAULT '[]'::jsonb;`,
+			`ALTER TABLE campaigns ADD COLUMN target_tag TEXT;`,
+			`ALTER TABLE campaigns ADD COLUMN target_model_id BIGINT;`,
+			`ALTER TABLE campaigns ADD COLUMN target_model_name TEXT;`,
+			`UPDATE campaigns SET target_type = 'explicit', target_device_ids = COALESCE((SELECT jsonb_agg(device_id ORDER BY device_id) FROM device_tasks WHERE campaign_id = campaigns.id), '[]'::jsonb);`,
+		}
+	}
+	migration3 := []string{
+		`CREATE TABLE IF NOT EXISTS tags (organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE, name TEXT NOT NULL, PRIMARY KEY (organisation_id, name));`,
+		`INSERT OR IGNORE INTO tags (organisation_id, name) SELECT DISTINCT organisation_id, tag FROM device_tags;`,
+		`CREATE INDEX IF NOT EXISTS idx_tags_organisation_name ON tags(organisation_id, name);`,
+	}
+	if s.isPostgres() {
+		migration3 = []string{
+			`CREATE TABLE IF NOT EXISTS tags (organisation_id BIGINT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE, name TEXT NOT NULL, PRIMARY KEY (organisation_id, name));`,
+			`INSERT INTO tags (organisation_id, name) SELECT DISTINCT organisation_id, tag FROM device_tags ON CONFLICT DO NOTHING;`,
+			`CREATE INDEX IF NOT EXISTS idx_tags_organisation_name ON tags(organisation_id, name);`,
+		}
+	}
 	return []migration{
 		{
 			id:         1,
 			statements: initialSchema,
 		},
+		{id: 2, statements: migration2},
+		{id: 3, statements: migration3},
 	}, nil
 }
 

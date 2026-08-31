@@ -174,6 +174,10 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 	device.LastEventReceivedMS = device.LastSeenMS
 
 	detail := domain.DeviceDetail{Device: device}
+	detail.Device.Tags, err = s.DeviceTags(ctx, deviceID, organisationID)
+	if err != nil {
+		return domain.DeviceDetail{}, err
+	}
 	if username.Valid {
 		detail.MQTTCredential = &domain.DeviceMQTTCredential{
 			DeviceID: device.ID,
@@ -192,6 +196,14 @@ func (s *Store) DeviceDetail(ctx context.Context, deviceID string, organisationI
 }
 
 func (s *Store) SaveDeviceWithMQTTCredential(ctx context.Context, cfg domain.DeviceWithMQTTCredential) error {
+	var normalizedTags []string
+	var err error
+	if cfg.Device.Tags != nil {
+		normalizedTags, err = NormalizeTags(cfg.Device.Tags)
+		if err != nil {
+			return err
+		}
+	}
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -210,12 +222,25 @@ func (s *Store) SaveDeviceWithMQTTCredential(ctx context.Context, cfg domain.Dev
 	if err := s.refreshDeviceSearchTextTx(ctx, tx, cfg.Device.OrganisationID, cfg.Device.ID); err != nil {
 		return err
 	}
+	if cfg.Device.Tags != nil {
+		if err := s.replaceDeviceTagsTx(ctx, tx, cfg.Device.ID, cfg.Device.OrganisationID, normalizedTags); err != nil {
+			return err
+		}
+	}
 
 	return tx.Commit()
 }
 
 // SaveDevice writes a credential-free device and removes transport credentials.
 func (s *Store) SaveDevice(ctx context.Context, device domain.Device) error {
+	var normalizedTags []string
+	var err error
+	if device.Tags != nil {
+		normalizedTags, err = NormalizeTags(device.Tags)
+		if err != nil {
+			return err
+		}
+	}
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -233,6 +258,11 @@ func (s *Store) SaveDevice(ctx context.Context, device domain.Device) error {
 	if err := s.refreshDeviceSearchTextTx(ctx, tx, device.OrganisationID, device.ID); err != nil {
 		return err
 	}
+	if device.Tags != nil {
+		if err := s.replaceDeviceTagsTx(ctx, tx, device.ID, device.OrganisationID, normalizedTags); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -247,14 +277,24 @@ func deleteDeviceCredentialTx(ctx context.Context, tx txRunner, dialect Dialect,
 }
 
 func (s *Store) DeleteDevice(ctx context.Context, deviceID string, organisationID int64) error {
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	query := `DELETE FROM devices WHERE id = ? AND organisation_id = ?`
 	args := []any{deviceID, organisationID}
 	if s.dialect == DialectPostgres || s.dialect == DialectPostgreSQL {
 		query = `DELETE FROM devices WHERE id = $1 AND organisation_id = $2`
 	}
 
-	_, err := s.writeDB.ExecContext(ctx, query, args...)
-	return err
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	if err := s.cleanupUnusedTagsTx(ctx, tx, organisationID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateDeviceSupportNote replaces the support-maintained note for a device.

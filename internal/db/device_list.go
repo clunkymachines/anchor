@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"math"
+	"sort"
 	"strings"
 
 	"anchor/internal/domain"
@@ -21,6 +22,8 @@ var allowedDevicePageSizes = map[int]struct{}{
 type DeviceListQuery struct {
 	OrganisationID int64
 	Query          string
+	Tags           []string
+	DeviceModelID  int64
 	Page           int
 	PageSize       int
 }
@@ -71,6 +74,21 @@ func NormalizeDeviceListPagination(page int, pageSize int, totalRows int) Pagina
 
 func (s *Store) ListDevicePage(ctx context.Context, query DeviceListQuery) (DeviceListPage, error) {
 	query.Query = strings.TrimSpace(query.Query)
+	normalizedTags := make([]string, 0, len(query.Tags))
+	seenTags := make(map[string]struct{}, len(query.Tags))
+	for _, rawTag := range query.Tags {
+		tag, err := NormalizeTag(rawTag)
+		if err != nil {
+			return DeviceListPage{}, err
+		}
+		if _, exists := seenTags[tag]; exists {
+			continue
+		}
+		seenTags[tag] = struct{}{}
+		normalizedTags = append(normalizedTags, tag)
+	}
+	sort.Strings(normalizedTags)
+	query.Tags = normalizedTags
 	filteredCount, err := s.countDevicePageRows(ctx, query)
 	if err != nil {
 		return DeviceListPage{}, err
@@ -138,13 +156,28 @@ func (s *Store) countDevicePageRows(ctx context.Context, query DeviceListQuery) 
 			AND (? = '' OR LOWER(d.device_search_text) LIKE '%' || LOWER(?) || '%')
 	`
 	args := []any{query.OrganisationID, query.Query, query.Query}
+	for _, tag := range query.Tags {
+		sqlQuery += ` AND EXISTS (SELECT 1 FROM device_tags dt WHERE dt.device_id = d.id AND dt.organisation_id = d.organisation_id AND dt.tag = ?)`
+		args = append(args, tag)
+	}
+	if query.DeviceModelID > 0 {
+		sqlQuery += ` AND d.device_model_id = ?`
+		args = append(args, query.DeviceModelID)
+	}
 	if s.isPostgres() {
 		sqlQuery = `
 			SELECT COUNT(*)
 			FROM devices d
-			WHERE d.organisation_id = $1
-				AND ($2 = '' OR d.device_search_text ILIKE '%' || $3 || '%')
+			WHERE d.organisation_id = ?
+				AND (? = '' OR d.device_search_text ILIKE '%' || ? || '%')
 		`
+		for range query.Tags {
+			sqlQuery += ` AND EXISTS (SELECT 1 FROM device_tags dt WHERE dt.device_id = d.id AND dt.organisation_id = d.organisation_id AND dt.tag = ?)`
+		}
+		if query.DeviceModelID > 0 {
+			sqlQuery += ` AND d.device_model_id = ?`
+		}
+		sqlQuery = numberedPlaceholders(sqlQuery)
 	}
 	var count int
 	if err := s.readDB.QueryRowContext(ctx, sqlQuery, args...).Scan(&count); err != nil {
@@ -178,10 +211,18 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 			AND r.version = json_extract(d.software_versions, '$.firmware')
 		WHERE d.organisation_id = ?
 			AND (? = '' OR LOWER(d.device_search_text) LIKE '%' || LOWER(?) || '%')
-		ORDER BY m.name ASC, d.id ASC
-		LIMIT ? OFFSET ?
 	`
-	args := []any{query.OrganisationID, query.Query, query.Query, pagination.PageSize, pagination.Offset}
+	args := []any{query.OrganisationID, query.Query, query.Query}
+	for _, tag := range query.Tags {
+		sqlQuery += ` AND EXISTS (SELECT 1 FROM device_tags dt WHERE dt.device_id = d.id AND dt.organisation_id = d.organisation_id AND dt.tag = ?)`
+		args = append(args, tag)
+	}
+	if query.DeviceModelID > 0 {
+		sqlQuery += ` AND d.device_model_id = ?`
+		args = append(args, query.DeviceModelID)
+	}
+	sqlQuery += ` ORDER BY m.name ASC, d.id ASC LIMIT ? OFFSET ?`
+	args = append(args, pagination.PageSize, pagination.Offset)
 	if s.isPostgres() {
 		sqlQuery = `
 			SELECT d.id, d.organisation_id, d.device_model_id, m.name, m.expected_heartbeat_seconds,
@@ -205,11 +246,17 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 			LEFT JOIN software_releases r ON r.organisation_id = d.organisation_id
 				AND r.device_model_id = d.device_model_id
 				AND r.version = d.software_versions ->> 'firmware'
-			WHERE d.organisation_id = $1
-				AND ($2 = '' OR d.device_search_text ILIKE '%' || $3 || '%')
-			ORDER BY m.name ASC, d.id ASC
-			LIMIT $4 OFFSET $5
+			WHERE d.organisation_id = ?
+				AND (? = '' OR d.device_search_text ILIKE '%' || ? || '%')
 		`
+		for range query.Tags {
+			sqlQuery += ` AND EXISTS (SELECT 1 FROM device_tags dt WHERE dt.device_id = d.id AND dt.organisation_id = d.organisation_id AND dt.tag = ?)`
+		}
+		if query.DeviceModelID > 0 {
+			sqlQuery += ` AND d.device_model_id = ?`
+		}
+		sqlQuery += ` ORDER BY m.name ASC, d.id ASC LIMIT ? OFFSET ?`
+		sqlQuery = numberedPlaceholders(sqlQuery)
 	}
 
 	rows, err := s.readDB.QueryContext(ctx, sqlQuery, args...)
@@ -256,6 +303,10 @@ func (s *Store) listDevicePageRows(ctx context.Context, query DeviceListQuery, p
 			return nil, err
 		}
 		device.SoftwareVersions = domain.SoftwareVersions(versions)
+		device.Tags, err = s.DeviceTags(ctx, device.ID, device.OrganisationID)
+		if err != nil {
+			return nil, err
+		}
 		device.LastEventReceivedMS = device.LastSeenMS
 		status := domain.CalculateDeviceCVEStatus(false, domain.CVEImpactStatus{})
 		if releaseID.Valid {

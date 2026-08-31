@@ -27,6 +27,14 @@ func (s *Store) CreateCoAPCredential(ctx context.Context, credential domain.CoAP
 }
 
 func (s *Store) SaveDeviceWithCoAPCredential(ctx context.Context, cfg domain.DeviceWithCoAPCredential) (domain.CoAPCredential, error) {
+	var normalizedTags []string
+	if cfg.Device.Tags != nil {
+		var err error
+		normalizedTags, err = NormalizeTags(cfg.Device.Tags)
+		if err != nil {
+			return domain.CoAPCredential{}, err
+		}
+	}
 	credential, err := prepareNewCoAPCredential(cfg.Credential)
 	if err != nil {
 		return domain.CoAPCredential{}, err
@@ -52,6 +60,11 @@ func (s *Store) SaveDeviceWithCoAPCredential(ctx context.Context, cfg domain.Dev
 	}
 	if err := s.refreshDeviceSearchTextTx(ctx, tx, cfg.Device.OrganisationID, cfg.Device.ID); err != nil {
 		return domain.CoAPCredential{}, err
+	}
+	if cfg.Device.Tags != nil {
+		if err := s.replaceDeviceTagsTx(ctx, tx, cfg.Device.ID, cfg.Device.OrganisationID, normalizedTags); err != nil {
+			return domain.CoAPCredential{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.CoAPCredential{}, err

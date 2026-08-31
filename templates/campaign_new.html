@@ -1,28 +1,49 @@
-{{template "app_page_start" (dict "Title" (printf "Create %s campaign - Anchor" .TaskLabel) "Shell" .Shell "Active" "campaigns" "OrganisationAction" "/campaigns" "SearchPlaceholder" "Search campaigns" "DeviceBadge" "" "ReleaseBadge" "")}}
+{{template "app_page_start" (dict "Title" (printf "Create %s campaign - Anchor" .TaskLabel) "Shell" .Shell "Active" "campaigns" "OrganisationAction" "/campaigns" "HideSearch" true "DeviceBadge" "" "ReleaseBadge" "")}}
 				<main class="app-workspace">
 					<header class="page-header">
 						<div>
 							<h1 class="page-title">Create {{.TaskLabel}} campaign</h1>
-							<p class="page-subtitle">{{len .Devices}} selected devices · {{.TaskHelp}}</p>
+							<p class="page-subtitle">{{.TaskHelp}}</p>
 						</div>
 						<div class="page-actions">
-							<a class="button button-secondary" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Change selection</a>
+							{{if eq .TargetType "explicit"}}<a class="button button-secondary" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Change selection</a>{{else}}<a class="button button-secondary" href="/campaigns?organisation_id={{.Shell.SelectedOrganisationID}}">Back to campaigns</a>{{end}}
 						</div>
 					</header>
 
 					{{if .FormError}}<p class="form-error">{{.FormError}}</p>{{end}}
 
+					<form id="campaign-create-form" class="campaign-create-form" method="post" action="/campaigns">
+						<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
+						<input type="hidden" name="task_type" value="{{.TaskType}}">
 					<section class="card form-card">
 						<header class="card-header">
 							<div>
-								<h2 class="card-title">Targets</h2>
-								<p class="card-subtitle">Selection is fixed for this launch.</p>
+								<h2 class="card-title">{{if eq .TargetType "explicit"}}Selected devices{{else}}Target devices{{end}}</h2>
+								<p class="card-subtitle">{{if eq .TargetType "explicit"}}Only the devices selected in the inventory will receive this task.{{else}}Choose a tag, a model, or both. When both are set, devices must match both filters.{{end}}</p>
 							</div>
 						</header>
-						<div class="card-body">
-							{{range .Devices}}
-								<span class="protocol-pill">{{.ID}} · {{.ModelName}}</span>
+						<div class="card-body campaign-targeting" data-campaign-targeting data-estimate-url="/campaigns/estimate">
+							{{if eq .TargetType "explicit"}}
+							<input type="hidden" name="target_type" value="explicit">
+							<div class="tag-list campaign-selected-devices">
+								{{range .Devices}}<span class="tag-chip">{{.ID}} · {{.ModelName}}</span><input type="hidden" name="device_id" value="{{.ID}}">{{else}}<p class="field-help">No devices selected. Return to the inventory to select devices.</p>{{end}}
+							</div>
+							{{else}}
+							<input type="hidden" name="target_type" value="filters">
+							<div class="form-grid">
+							<label class="field">
+								<span class="field-label">Tag</span>
+								<input class="input" name="target_tag" value="{{.TargetTag}}" list="campaign-tag-suggestions" maxlength="64" placeholder="Any tag" autocomplete="off" spellcheck="false">
+							</label>
+							<label class="field">
+								<span class="field-label">Model</span>
+								<select class="select" name="target_model_id"><option value="">Any model</option>{{range .DeviceModels}}<option value="{{.ID}}" {{if eq .ID $.TargetModelID}}selected{{end}}>{{.Name}}</option>{{end}}</select>
+							</label>
+							</div>
+							<datalist id="campaign-tag-suggestions">{{range .TagSuggestions}}<option value="{{.}}">{{end}}</datalist>
 							{{end}}
+							<div class="campaign-estimate" aria-live="polite"><strong data-campaign-estimate>{{.EstimatedCount}}</strong><span>{{if eq .TargetType "explicit"}}selected devices{{else}}matching devices{{end}}</span><small data-campaign-estimate-error></small></div>
+							{{if ne .TargetType "explicit"}}<p class="field-help">Matching devices are fixed when you start the campaign. Later tag or model changes do not change its targets.</p>{{end}}
 						</div>
 					</section>
 
@@ -33,10 +54,7 @@
 								<p class="card-subtitle">Creates one queued task per selected device.</p>
 							</div>
 						</header>
-						<form class="card-body device-task-form" method="post" action="/campaigns">
-							<input type="hidden" name="organisation_id" value="{{.Shell.SelectedOrganisationID}}">
-							<input type="hidden" name="task_type" value="{{.TaskType}}">
-							{{range .Devices}}<input type="hidden" name="device_id" value="{{.ID}}">{{end}}
+						<div class="card-body device-task-form">
 							<label class="field">
 								<span class="field-label">Name</span>
 								<input class="input" name="name" value="{{.Name}}" required>
@@ -71,10 +89,11 @@
 							</label>
 							{{end}}
 							<div class="form-actions">
-								<a class="button button-ghost" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Cancel</a>
-								<button class="button button-primary" type="submit" {{if and (eq .TaskType "fota") (not .CanUseFOTA)}}disabled{{end}}>Start {{.TaskLabel}} campaign</button>
+								<a class="button button-ghost" href="{{if eq .TargetType "explicit"}}/devices{{else}}/campaigns{{end}}?organisation_id={{.Shell.SelectedOrganisationID}}">Cancel</a>
+								<button class="button button-primary" type="submit" data-campaign-start data-unavailable="{{and (eq .TaskType "fota") (not .CanUseFOTA)}}" {{if and (eq .TaskType "fota") (not .CanUseFOTA)}}disabled{{end}}>Start {{.TaskLabel}} campaign</button>
 							</div>
-						</form>
+						</div>
 					</section>
+					</form>
 				</main>
 {{template "app_page_end" .}}

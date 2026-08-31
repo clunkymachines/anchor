@@ -193,6 +193,8 @@ type Device struct {
 	IsGateway bool
 	// SupportNote contains free-form operational context maintained by support users.
 	SupportNote string
+	// Tags contains normalized organisation-scoped tags in alphabetical order.
+	Tags []string
 }
 
 type DeviceModel struct {
@@ -368,6 +370,11 @@ type Campaign struct {
 	CreatedAt        string
 	FinishedAt       string
 	CanceledAt       string
+	TargetType       string
+	TargetDeviceIDs  []string
+	TargetTag        string
+	TargetModelID    int64
+	TargetModelName  string
 	TargetCount      int
 	ParameterSummary string
 	Counts           TaskStatusCounts

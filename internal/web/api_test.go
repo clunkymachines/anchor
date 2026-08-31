@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -110,6 +111,51 @@ func TestAPIBulkUpsertDuplicateAndMQTTPasswordUpdate(t *testing.T) {
 	}
 	if bcrypt.CompareHashAndPassword([]byte(mqttCredential.PasswordHash), []byte("second")) != nil {
 		t.Fatal("expected MQTT password hash to be replaced on upsert")
+	}
+}
+
+func TestAPISingleUpsertTagsReplacePreserveClearAndNormalize(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, organisationID, modelID := testAPIStore(t, ctx)
+	defer store.Close()
+	credential, err := store.CreateOrganisationAPICredential(ctx, organisationID, "Tags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: store}
+	handler := server.requireAPIAuth(http.HandlerFunc(server.apiDeviceUpsert))
+	do := func(body string) (apiBulkUpsertDeviceResult, int) {
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/devices/tagged", strings.NewReader(body))
+		req.SetPathValue("deviceID", "tagged")
+		req.Header.Set("Authorization", "Bearer "+credential.Token)
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		var result apiBulkUpsertDeviceResult
+		_ = json.NewDecoder(res.Body).Decode(&result)
+		return result, res.Code
+	}
+	base := `"device_model_id":` + strconv.FormatInt(modelID, 10) + `,"mqtt_username":"tagged","mqtt_password":"secret"`
+	result, status := do(`{` + base + `,"tags":[" Beta ","factory.floor"]}`)
+	if status != http.StatusOK || result.Tags == nil || !reflect.DeepEqual(*result.Tags, []string{"beta", "factory.floor"}) {
+		t.Fatalf("create status=%d result=%+v", status, result)
+	}
+	result, status = do(`{` + base + `}`)
+	if status != http.StatusOK || result.Tags == nil || !reflect.DeepEqual(*result.Tags, []string{"beta", "factory.floor"}) {
+		t.Fatalf("preserve status=%d result=%+v", status, result)
+	}
+	_, status = do(`{` + base + `,"tags":["beta","BETA"]}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("duplicate status=%d", status)
+	}
+	got, _ := store.DeviceTags(ctx, "tagged", organisationID)
+	if !reflect.DeepEqual(got, []string{"beta", "factory.floor"}) {
+		t.Fatalf("invalid update changed tags: %v", got)
+	}
+	result, status = do(`{` + base + `,"tags":[]}`)
+	if status != http.StatusOK || result.Tags == nil || len(*result.Tags) != 0 {
+		t.Fatalf("clear status=%d result=%+v", status, result)
 	}
 }
 

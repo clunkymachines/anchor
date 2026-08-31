@@ -6,7 +6,14 @@
 							<p class="page-subtitle">Bulk task launch history and progress.</p>
 						</div>
 						<div class="page-actions">
-							<a class="button button-primary" href="/devices?organisation_id={{.Shell.SelectedOrganisationID}}">Select devices</a>
+							<details class="action-menu">
+								<summary class="button button-primary">Create campaign <span class="action-menu-chevron" aria-hidden="true">{{template "icon_chevron_down" .}}</span></summary>
+								<div class="action-menu-popover" role="group" aria-label="Choose campaign task type">
+									<a class="action-menu-item" href="/campaigns/new?organisation_id={{.Shell.SelectedOrganisationID}}&task_type=read"><strong>Read</strong><span>Fetch current values</span></a>
+									<a class="action-menu-item" href="/campaigns/new?organisation_id={{.Shell.SelectedOrganisationID}}&task_type=write"><strong>Write</strong><span>Send typed values</span></a>
+									<a class="action-menu-item" href="/campaigns/new?organisation_id={{.Shell.SelectedOrganisationID}}&task_type=fota"><strong>FOTA</strong><span>Install a firmware release</span></a>
+								</div>
+							</details>
 						</div>
 					</header>
 

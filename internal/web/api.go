@@ -34,6 +34,7 @@ type apiBulkUpsertDeviceRequest struct {
 	MQTTPassword     string                  `json:"mqtt_password"`
 	SoftwareVersions domain.SoftwareVersions `json:"software_versions"`
 	IsGateway        bool                    `json:"is_gateway"`
+	Tags             *[]string               `json:"tags,omitempty"`
 	CoAP             *apiBulkCoAPCredential  `json:"coap,omitempty"`
 }
 
@@ -54,6 +55,7 @@ type apiBulkUpsertDeviceResult struct {
 	Updated      bool          `json:"updated,omitempty"`
 	MQTTUsername string        `json:"mqtt_username,omitempty"`
 	CoAPIdentity string        `json:"coap_identity,omitempty"`
+	Tags         *[]string     `json:"tags,omitempty"`
 	Error        *apiErrorBody `json:"error,omitempty"`
 }
 
@@ -130,6 +132,33 @@ func (s *Server) apiDeviceBulkUpsert(w http.ResponseWriter, r *http.Request) {
 	writeAPIJSON(w, status, apiBulkUpsertResponse{Results: results})
 }
 
+func (s *Server) apiDeviceUpsert(w http.ResponseWriter, r *http.Request) {
+	credential, ok := apiCredentialFromRequest(r)
+	if !ok {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "Bearer token is required.")
+		return
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	var request apiBulkUpsertDeviceRequest
+	if err := decoder.Decode(&request); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+		return
+	}
+	pathID := strings.TrimSpace(r.PathValue("deviceID"))
+	if request.ID != "" && strings.TrimSpace(request.ID) != pathID {
+		writeAPIError(w, http.StatusBadRequest, "device_id_mismatch", "Body id must match the device id in the URL.")
+		return
+	}
+	request.ID = pathID
+	result := s.apiUpsertOneDevice(r, credential.OrganisationID, request, make(map[string]struct{}))
+	if result.Error != nil {
+		writeAPIJSON(w, http.StatusBadRequest, result)
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req apiBulkUpsertDeviceRequest, seen map[string]struct{}) apiBulkUpsertDeviceResult {
 	req.ID = strings.TrimSpace(req.ID)
 	req.MQTTUsername = strings.TrimSpace(req.MQTTUsername)
@@ -147,6 +176,12 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 	if req.DeviceModelID <= 0 {
 		result.Error = &apiErrorBody{Code: "device_model_required", Message: "device_model_id is required."}
 		return result
+	}
+	if req.Tags != nil {
+		if _, err := db.NormalizeTags(*req.Tags); err != nil {
+			result.Error = &apiErrorBody{Code: "invalid_tags", Message: err.Error()}
+			return result
+		}
 	}
 	model, err := s.store.DeviceModel(r.Context(), req.DeviceModelID, organisationID)
 	if errors.Is(err, db.ErrNotFound) {
@@ -172,6 +207,9 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 		req.SoftwareVersions = domain.SoftwareVersions{}
 	}
 	device := domain.Device{ID: req.ID, OrganisationID: organisationID, DeviceModelID: req.DeviceModelID, SoftwareVersions: req.SoftwareVersions, IsGateway: req.IsGateway}
+	if req.Tags != nil {
+		device.Tags = append([]string{}, (*req.Tags)...)
+	}
 	switch strings.ToLower(strings.TrimSpace(model.ExpectedProtocol)) {
 	case "mqtt":
 		if req.MQTTUsername == "" {
@@ -244,6 +282,12 @@ func (s *Server) apiUpsertOneDevice(r *http.Request, organisationID int64, req a
 		result.Error = &apiErrorBody{Code: "unsupported_protocol", Message: "The device model protocol is not supported."}
 		return result
 	}
+	tags, err := s.store.DeviceTags(r.Context(), req.ID, organisationID)
+	if err != nil {
+		result.Error = &apiErrorBody{Code: "tags_lookup_error", Message: "Could not load device tags."}
+		return result
+	}
+	result.Tags = &tags
 
 	result.Status = "updated"
 	result.Updated = true

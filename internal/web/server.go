@@ -174,23 +174,36 @@ type devicesPageData struct {
 	IsEmptyFiltered       bool
 	DeviceInventoryLabel  string
 	DeviceInventorySuffix string
+	DeviceModels          []deviceModelOptionView
+	TagSuggestions        []string
+	TagOptions            []tagOptionView
+	ActiveTags            []string
+	ModelID               int64
+	HasFilters            bool
+	ReturnURL             string
 }
 
 type campaignSelectionPageData struct {
-	Shell        shellPageData
-	Devices      []campaignDevicePreviewView
-	Releases     []releaseOptionView
-	FormError    string
-	Name         string
-	TaskType     string
-	TaskLabel    string
-	TaskHelp     string
-	ReadPaths    string
-	WriteValues  string
-	TTLDays      int
-	ReleaseID    int64
-	CanUseFOTA   bool
-	FOTAHelpText string
+	Shell          shellPageData
+	Devices        []campaignDevicePreviewView
+	Releases       []releaseOptionView
+	FormError      string
+	Name           string
+	TaskType       string
+	TaskLabel      string
+	TaskHelp       string
+	ReadPaths      string
+	WriteValues    string
+	TTLDays        int
+	ReleaseID      int64
+	CanUseFOTA     bool
+	FOTAHelpText   string
+	DeviceModels   []deviceModelOptionView
+	TagSuggestions []string
+	TargetType     string
+	TargetTag      string
+	TargetModelID  int64
+	EstimatedCount int
 }
 
 type campaignsPageData struct {
@@ -215,6 +228,8 @@ type deviceCreatePageData struct {
 	MQTTUsername    string
 	CoAPPSKIdentity string
 	IsGateway       bool
+	TagSuggestions  []string
+	TagsInput       string
 }
 
 type deviceCreatedPageData struct {
@@ -240,6 +255,7 @@ type deviceDetailPageData struct {
 	TwinProperties       []twinPropertyView
 	RecentEvents         []deviceEventView
 	ActiveAndRecentTasks []deviceTaskView
+	TagSuggestions       []string
 }
 
 type deviceTaskLaunchPageData struct {
@@ -333,6 +349,13 @@ type deviceView struct {
 	Status           string
 	StatusClass      string
 	LastSeen         string
+	Tags             []string
+	TagOverflow      int
+}
+
+type tagOptionView struct {
+	Name     string
+	Selected bool
 }
 
 type paginationView struct {
@@ -350,6 +373,8 @@ type paginationView struct {
 	FormAction string
 	Query      string
 	Status     string
+	Tags       []string
+	ModelID    int64
 }
 
 type deviceDetailView struct {
@@ -372,6 +397,7 @@ type deviceDetailView struct {
 	StatusClass         string
 	LastSeen            string
 	SupportNote         string
+	Tags                []string
 }
 
 type mqttCredentialView struct {
@@ -444,6 +470,7 @@ type campaignView struct {
 	CanceledAt     string
 	TTLDays        int64
 	TargetCount    int
+	Target         string
 	Queued         int
 	Pending        int
 	InProgress     int
@@ -660,6 +687,8 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("GET /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTasks)))
 	mux.Handle("GET /devices/{deviceID}/tasks/new/{taskType}", server.requireAuth(http.HandlerFunc(server.deviceTaskNew)))
 	mux.Handle("POST /devices", server.requireAuth(http.HandlerFunc(server.devicesPost)))
+	mux.Handle("POST /devices/tags", server.requireAuth(http.HandlerFunc(server.deviceTagsBulkPost)))
+	mux.Handle("POST /devices/{deviceID}/tags", server.requireAuth(http.HandlerFunc(server.deviceTagsPost)))
 	mux.Handle("POST /devices/{deviceID}/tasks", server.requireAuth(http.HandlerFunc(server.deviceTaskPost)))
 	mux.Handle("POST /devices/{deviceID}/support-note", server.requireAuth(http.HandlerFunc(server.deviceSupportNotePost)))
 	mux.Handle("POST /devices/{deviceID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.deviceTaskCancelPost)))
@@ -667,7 +696,9 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.Handle("POST /devices/{deviceID}/coap/toggle", server.requireAuth(http.HandlerFunc(server.deviceCoAPTogglePost)))
 	mux.Handle("POST /devices/delete", server.requireAuth(http.HandlerFunc(server.deviceDeletePost)))
 	mux.Handle("GET /campaigns", server.requireAuth(http.HandlerFunc(server.campaigns)))
+	mux.Handle("GET /campaigns/new", server.requireAuth(http.HandlerFunc(server.campaignNew)))
 	mux.Handle("POST /campaigns/new", server.requireAuth(http.HandlerFunc(server.campaignNewPost)))
+	mux.Handle("GET /campaigns/estimate", server.requireAuth(http.HandlerFunc(server.campaignEstimate)))
 	mux.Handle("POST /campaigns", server.requireAuth(http.HandlerFunc(server.campaignsPost)))
 	mux.Handle("GET /campaigns/{campaignID}", server.requireAuth(http.HandlerFunc(server.campaignDetail)))
 	mux.Handle("POST /campaigns/{campaignID}/tasks/{taskID}/cancel", server.requireAuth(http.HandlerFunc(server.campaignTaskCancelPost)))
@@ -703,6 +734,8 @@ func NewServer(store *db.Store, configs ...ServerConfig) http.Handler {
 	mux.HandleFunc("GET /invitations/{token}", server.invitationSignup)
 	mux.HandleFunc("POST /invitations/{token}", server.invitationSignupPost)
 	mux.Handle("POST /api/v1/devices/bulk-upsert", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceBulkUpsert)))
+	mux.Handle("PUT /api/v1/devices/{deviceID}", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceUpsert)))
+	mux.Handle("POST /api/v1/devices/{deviceID}", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceUpsert)))
 	mux.Handle("POST /api/v1/devices/{deviceID}/check-in", server.requireAPIAuth(http.HandlerFunc(server.apiDeviceCheckIn)))
 	mux.Handle("POST /internal/coap/v1/credentials/resolve", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPResolveCredentials)))
 	mux.Handle("POST /internal/coap/v1/devices/{deviceID}/activity", server.requireCoAPInternalAuth(http.HandlerFunc(server.coAPActivity)))
@@ -818,11 +851,21 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	tags := nonBlankStrings(r.URL.Query()["tag"])
+	var tagErr error
+	tags, tagErr = normalizeFilterTags(tags)
+	if tagErr != nil {
+		http.Error(w, tagErr.Error(), http.StatusBadRequest)
+		return
+	}
+	modelID, _ := strconv.ParseInt(r.URL.Query().Get("model_id"), 10, 64)
 	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
 	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), db.DefaultDevicePageSize)
 	devicePage, err := s.store.ListDevicePage(r.Context(), db.DeviceListQuery{
 		OrganisationID: shell.SelectedOrganisationID,
 		Query:          query,
+		Tags:           tags,
+		DeviceModelID:  modelID,
 		Page:           page,
 		PageSize:       pageSize,
 	})
@@ -835,6 +878,23 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device metrics query error", http.StatusInternalServerError)
 		return
 	}
+	models, err := s.store.ListDeviceModels(r.Context(), shell.SelectedOrganisationID)
+	if err != nil {
+		http.Error(w, "device model query error", http.StatusInternalServerError)
+		return
+	}
+	modelOptions := make([]deviceModelOptionView, 0, len(models))
+	for _, model := range models {
+		option := deviceModelOption(model)
+		option.Selected = model.ID == modelID
+		modelOptions = append(modelOptions, option)
+	}
+	tagSuggestions, err := s.store.ListTagSuggestions(r.Context(), shell.SelectedOrganisationID, "")
+	if err != nil {
+		http.Error(w, "tag query error", http.StatusInternalServerError)
+		return
+	}
+	tagOptions := deviceTagFilterOptions(tagSuggestions, tags)
 
 	views := make([]deviceView, 0, len(devicePage.Rows))
 	now := time.Now()
@@ -853,6 +913,10 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 			communication = append(communication, "Gateway")
 		}
 		connectivity := deviceConnectivity(row.Device, now)
+		tagOverflow := 0
+		if len(row.Device.Tags) > 3 {
+			tagOverflow = len(row.Device.Tags) - 3
+		}
 		views = append(views, deviceView{
 			ID:               row.Device.ID,
 			OrganisationID:   row.Device.OrganisationID,
@@ -865,13 +929,16 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 			Status:           connectivity.Status,
 			StatusClass:      connectivity.StatusClass,
 			LastSeen:         connectivity.LastSeen,
+			Tags:             row.Device.Tags,
+			TagOverflow:      tagOverflow,
 		})
 	}
 
 	hasQuery := query != ""
+	hasFilters := len(tags) > 0 || modelID > 0
 	inventoryLabel := strconv.Itoa(metrics.TotalDevices) + " devices registered"
 	inventorySuffix := ""
-	if hasQuery {
+	if hasQuery || hasFilters {
 		inventoryLabel = strconv.Itoa(devicePage.FilteredCount) + " matching devices"
 		inventorySuffix = "from " + strconv.Itoa(metrics.TotalDevices) + " registered"
 	}
@@ -881,12 +948,19 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		Metrics:               metrics,
 		FilteredCount:         devicePage.FilteredCount,
 		Query:                 query,
-		Pagination:            devicePaginationView(r.URL.Path, shell.SelectedOrganisationID, query, devicePage.Pagination),
+		Pagination:            devicePaginationView(r.URL.Path, shell.SelectedOrganisationID, query, tags, modelID, devicePage.Pagination),
 		HasQuery:              hasQuery,
-		IsEmptyUnfiltered:     !hasQuery && metrics.TotalDevices == 0,
-		IsEmptyFiltered:       hasQuery && devicePage.FilteredCount == 0,
+		IsEmptyUnfiltered:     !hasQuery && !hasFilters && metrics.TotalDevices == 0,
+		IsEmptyFiltered:       (hasQuery || hasFilters) && devicePage.FilteredCount == 0,
 		DeviceInventoryLabel:  inventoryLabel,
 		DeviceInventorySuffix: inventorySuffix,
+		DeviceModels:          modelOptions,
+		TagSuggestions:        tagSuggestions,
+		TagOptions:            tagOptions,
+		ActiveTags:            tags,
+		ModelID:               modelID,
+		HasFilters:            hasFilters,
+		ReturnURL:             devicePageURL(r.URL.Path, shell.SelectedOrganisationID, query, tags, modelID, devicePage.Pagination.Page, devicePage.Pagination.PageSize),
 	})
 }
 
@@ -1158,6 +1232,12 @@ func (s *Server) devicesPost(w http.ResponseWriter, r *http.Request) {
 		DeviceModelID:    deviceModelID,
 		SoftwareVersions: domain.SoftwareVersions{},
 	}
+	tags := parseTagInput(r.FormValue("tags"))
+	if _, err := db.NormalizeTags(tags); err != nil {
+		s.renderDeviceNewForOrganisationWithError(w, r, shell, organisationID, err.Error())
+		return
+	}
+	device.Tags = tags
 
 	switch strings.ToLower(strings.TrimSpace(model.ExpectedProtocol)) {
 	case "mqtt":
@@ -1265,6 +1345,63 @@ func (s *Server) deviceSupportNotePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/devices/"+url.PathEscape(deviceID)+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) deviceTagsPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	deviceID := r.PathValue("deviceID")
+	operation := r.FormValue("operation")
+	if operation != "add" && operation != "remove" {
+		http.Error(w, "choose add or remove", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateDeviceTagsBulk(r.Context(), organisationID, []string{deviceID}, r.FormValue("tag"), operation == "add"); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/devices/"+url.PathEscape(deviceID)+"?organisation_id="+strconv.FormatInt(organisationID, 10), http.StatusSeeOther)
+}
+
+func (s *Server) deviceTagsBulkPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.FormValue("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	operation := r.FormValue("operation")
+	if operation != "add" && operation != "remove" {
+		http.Error(w, "choose add or remove", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateDeviceTagsBulk(r.Context(), organisationID, r.Form["device_id"], r.FormValue("tag"), operation == "add"); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	target := r.FormValue("return_to")
+	if !strings.HasPrefix(target, "/devices?") {
+		target = "/devices?organisation_id=" + strconv.FormatInt(organisationID, 10)
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 func (s *Server) deviceCoAPReplacePost(w http.ResponseWriter, r *http.Request) {
@@ -1429,7 +1566,13 @@ func (s *Server) taskParametersFromForm(r *http.Request, taskType string, organi
 	case domain.TaskTypeRead:
 		return domain.BuildReadTaskParameters(readTaskPathsFromForm(r.FormValue("read_paths")))
 	case domain.TaskTypeWrite:
-		return domain.BuildWriteTaskParameters(r.FormValue("write_values"))
+		// The web editor presents an array; the task wire format wraps that
+		// array in a values object. Continue accepting the full object too.
+		input := strings.TrimSpace(r.FormValue("write_values"))
+		if strings.HasPrefix(input, "[") {
+			input = `{"values":` + input + `}`
+		}
+		return domain.BuildWriteTaskParameters(input)
 	case domain.TaskTypeFOTA:
 		releaseID, err := strconv.ParseInt(r.FormValue("release_id"), 10, 64)
 		if err != nil || releaseID <= 0 {
@@ -2555,6 +2698,28 @@ func (s *Server) campaigns(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) campaignNew(w http.ResponseWriter, r *http.Request) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	taskType := r.URL.Query().Get("task_type")
+	if taskType == "" {
+		taskType = domain.TaskTypeRead
+	}
+	data, err := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, nil, taskType, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.renderCampaignNew(w, data)
+}
+
 func (s *Server) campaignNewPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
@@ -2570,24 +2735,45 @@ func (s *Server) campaignNewPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskType := r.FormValue("task_type")
-	taskLabel, taskHelp, ok := campaignTaskLaunchCopy(taskType)
+	_, _, ok = campaignTaskLaunchCopy(taskType)
 	if !ok {
 		http.Error(w, "choose a supported task type", http.StatusBadRequest)
 		return
 	}
-	data, err := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, r.Form["device_id"], taskType, "")
+	deviceIDs := nonBlankStrings(r.Form["device_id"])
+	if len(deviceIDs) == 0 {
+		http.Error(w, "Select at least one device from the device list before creating a campaign.", http.StatusBadRequest)
+		return
+	}
+	data, err := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, taskType, "")
 	if err != nil {
-		s.renderCampaignNew(w, campaignSelectionPageData{
-			Shell:     shell,
-			FormError: err.Error(),
-			TaskType:  taskType,
-			TaskLabel: taskLabel,
-			TaskHelp:  taskHelp,
-			TTLDays:   domain.DefaultTaskTTLDays,
-		})
+		http.Error(w, "The selected devices are unavailable in this organisation. Return to the device list and select them again.", http.StatusBadRequest)
 		return
 	}
 	s.renderCampaignNew(w, data)
+}
+
+func (s *Server) campaignEstimate(w http.ResponseWriter, r *http.Request) {
+	shell, ok := s.shellData(w, r)
+	if !ok {
+		return
+	}
+	organisationID, ok := requestedOrganisationID(r.URL.Query().Get("organisation_id"), shell.Organisations)
+	if !ok {
+		writeAPIError(w, http.StatusBadRequest, "invalid_organisation", "Choose an organisation.")
+		return
+	}
+	selector, err := campaignTargetFromValues(organisationID, r.URL.Query())
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_target", err.Error())
+		return
+	}
+	count, err := s.store.EstimateCampaignTargets(r.Context(), selector)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_target", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, map[string]int{"count": count})
 }
 
 func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
@@ -2604,28 +2790,15 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	deviceIDs := r.Form["device_id"]
+	selector, targetErr := campaignTargetFromValues(organisationID, r.Form)
 	taskType := r.FormValue("task_type")
 	if _, _, ok := deviceTaskLaunchCopy(taskType); !ok {
 		http.Error(w, "choose a supported task type", http.StatusBadRequest)
 		return
 	}
 	parametersJSON, err := s.taskParametersFromForm(r, taskType, organisationID)
-	if err == nil && (taskType == domain.TaskTypeRead || taskType == domain.TaskTypeWrite) {
-		for _, deviceID := range deviceIDs {
-			protocol, protocolErr := s.store.DeviceExpectedProtocol(r.Context(), deviceID, organisationID)
-			if protocolErr != nil {
-				err = protocolErr
-				break
-			}
-			if protocol == "coap" {
-				err = validateCoAPTaskParameters(taskType, parametersJSON)
-				break
-			}
-		}
-	}
-	if err == nil && taskType == domain.TaskTypeFOTA {
-		err = s.validateCampaignFOTASelection(r.Context(), organisationID, deviceIDs, r.FormValue("release_id"))
+	if targetErr != nil {
+		err = targetErr
 	}
 	_, ttlSeconds, ttlErr := domain.ParseTaskTTLDays(r.FormValue("ttl_days"))
 	if ttlErr != nil && err == nil {
@@ -2639,18 +2812,7 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 		err = errors.New("choose a supported task type")
 	}
 	if err != nil {
-		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, taskType, err.Error())
-		if loadErr != nil {
-			http.Error(w, loadErr.Error(), http.StatusBadRequest)
-			return
-		}
-		data.Name = name
-		data.TaskType = taskType
-		data.ReadPaths = r.FormValue("read_paths")
-		data.WriteValues = r.FormValue("write_values")
-		data.ReleaseID, _ = strconv.ParseInt(r.FormValue("release_id"), 10, 64)
-		data.TTLDays = parsePositiveInt(r.FormValue("ttl_days"), domain.DefaultTaskTTLDays)
-		s.renderCampaignNew(w, data)
+		s.renderCampaignSubmissionError(w, r, shell, organisationID, selector, err)
 		return
 	}
 	result, err := s.store.CreateCampaign(r.Context(), db.CampaignCreate{
@@ -2659,18 +2821,14 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 		TaskType:       taskType,
 		ParametersJSON: parametersJSON,
 		TTLSeconds:     ttlSeconds,
-		DeviceIDs:      deviceIDs,
+		DeviceIDs:      selector.DeviceIDs,
+		TargetType:     selector.TargetType,
+		TargetTag:      selector.Tag,
+		TargetModelID:  selector.ModelID,
 		CreatedAt:      time.Now().UTC(),
 	})
 	if err != nil {
-		data, loadErr := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, taskType, err.Error())
-		if loadErr != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		data.Name = name
-		data.TaskType = taskType
-		s.renderCampaignNew(w, data)
+		s.renderCampaignSubmissionError(w, r, shell, organisationID, selector, err)
 		return
 	}
 	for _, task := range result.PendingTasks {
@@ -2678,6 +2836,67 @@ func (s *Server) campaignsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.processTaskQueue(r.Context())
 	http.Redirect(w, r, campaignDetailURL(result.Campaign.ID, organisationID), http.StatusSeeOther)
+}
+
+// The creation screen chooses one or both filters without exposing the storage
+// targeting modes. Infer the selector on the server so no JavaScript is required.
+func campaignTargetFromValues(organisationID int64, values url.Values) (db.CampaignTargetSelector, error) {
+	selector := db.CampaignTargetSelector{
+		OrganisationID: organisationID,
+		TargetType:     strings.TrimSpace(values.Get("target_type")),
+		DeviceIDs:      nonBlankStrings(values["device_id"]),
+		Tag:            strings.TrimSpace(values.Get("target_tag")),
+	}
+	if selector.TargetType == "" {
+		selector.TargetType = db.CampaignTargetExplicit
+	}
+	if rawModel := strings.TrimSpace(values.Get("target_model_id")); rawModel != "" {
+		modelID, err := strconv.ParseInt(rawModel, 10, 64)
+		if err != nil || modelID <= 0 {
+			return selector, errors.New("Choose a valid device model.")
+		}
+		selector.ModelID = modelID
+	}
+	if selector.TargetType == "filters" {
+		if len(selector.DeviceIDs) != 0 {
+			return selector, errors.New("Choose tag/model filters or selected devices, not both.")
+		}
+		switch {
+		case selector.Tag != "" && selector.ModelID > 0:
+			selector.TargetType = db.CampaignTargetTagModel
+		case selector.Tag != "":
+			selector.TargetType = db.CampaignTargetTag
+		case selector.ModelID > 0:
+			selector.TargetType = db.CampaignTargetModel
+		default:
+			return selector, errors.New("Choose a tag, a model, or both to target devices.")
+		}
+	}
+	return selector, nil
+}
+
+func (s *Server) renderCampaignSubmissionError(w http.ResponseWriter, r *http.Request, shell shellPageData, organisationID int64, selector db.CampaignTargetSelector, submitErr error) {
+	var deviceIDs []string
+	if selector.TargetType == db.CampaignTargetExplicit {
+		deviceIDs = selector.DeviceIDs
+	}
+	data, err := s.loadCampaignSelectionPageData(r.Context(), shell, organisationID, deviceIDs, r.FormValue("task_type"), submitErr.Error())
+	if err != nil {
+		http.Error(w, "The selected devices are unavailable. Return to the device list and select them again.", http.StatusBadRequest)
+		return
+	}
+	data.Name = r.FormValue("name")
+	data.ReadPaths = r.FormValue("read_paths")
+	data.WriteValues = r.FormValue("write_values")
+	data.ReleaseID, _ = strconv.ParseInt(r.FormValue("release_id"), 10, 64)
+	data.TTLDays = parsePositiveInt(r.FormValue("ttl_days"), domain.DefaultTaskTTLDays)
+	data.TargetType = selector.TargetType
+	data.TargetTag = r.FormValue("target_tag")
+	data.TargetModelID = selector.ModelID
+	if count, estimateErr := s.store.EstimateCampaignTargets(r.Context(), selector); estimateErr == nil {
+		data.EstimatedCount = count
+	}
+	s.renderCampaignNew(w, data)
 }
 
 func (s *Server) campaignDetail(w http.ResponseWriter, r *http.Request) {
@@ -3256,6 +3475,7 @@ func (s *Server) renderDeviceNewForOrganisationWithError(w http.ResponseWriter, 
 	data.MQTTUsername = strings.TrimSpace(r.FormValue("mqtt_username"))
 	data.CoAPPSKIdentity = strings.TrimSpace(r.FormValue("coap_psk_identity"))
 	data.IsGateway = r.FormValue("is_gateway") == "on"
+	data.TagsInput = r.FormValue("tags")
 	if selectedModelID, err := strconv.ParseInt(r.FormValue("device_model_id"), 10, 64); err == nil {
 		for index := range data.DeviceModels {
 			data.DeviceModels[index].Selected = data.DeviceModels[index].ID == selectedModelID
@@ -3557,6 +3777,10 @@ func (s *Server) loadDeviceCreatePageData(ctx context.Context, shell shellPageDa
 	if err != nil {
 		return deviceCreatePageData{}, err
 	}
+	tags, err := s.store.ListTagSuggestions(ctx, organisationID, "")
+	if err != nil {
+		return deviceCreatePageData{}, err
+	}
 
 	note := ""
 	if len(modelOptions) == 0 {
@@ -3567,6 +3791,7 @@ func (s *Server) loadDeviceCreatePageData(ctx context.Context, shell shellPageDa
 		DeviceModels:   modelOptions,
 		FormError:      formError,
 		DeviceFormNote: note,
+		TagSuggestions: tags,
 	}, nil
 }
 
@@ -3761,7 +3986,12 @@ func (s *Server) loadDeviceDetailPageData(ctx context.Context, shell shellPageDa
 			StatusClass:         connectivity.StatusClass,
 			LastSeen:            connectivity.LastSeen,
 			SupportNote:         detail.Device.SupportNote,
+			Tags:                detail.Device.Tags,
 		},
+	}
+	data.TagSuggestions, err = s.store.ListTagSuggestions(ctx, organisationID, "")
+	if err != nil {
+		return deviceDetailPageData{}, err
 	}
 	if cveStatus.MatchedReleaseID > 0 {
 		release, err := s.store.SoftwareRelease(ctx, cveStatus.MatchedReleaseID, organisationID)
@@ -3875,84 +4105,67 @@ func campaignTaskLaunchCopy(taskType string) (label string, help string, ok bool
 }
 
 func (s *Server) loadCampaignSelectionPageData(ctx context.Context, shell shellPageData, organisationID int64, deviceIDs []string, taskType string, formError string) (campaignSelectionPageData, error) {
+	shell.SelectedOrganisationID = organisationID
 	taskLabel, taskHelp, ok := campaignTaskLaunchCopy(taskType)
 	if !ok {
 		return campaignSelectionPageData{}, errors.New("choose a supported task type")
 	}
-	devices, err := s.store.CampaignTargetDevices(ctx, organisationID, deviceIDs)
-	if err != nil {
-		return campaignSelectionPageData{}, err
-	}
-	views := make([]campaignDevicePreviewView, 0, len(devices))
-	modelID := int64(0)
-	sameModel := true
-	for i, device := range devices {
-		if i == 0 {
-			modelID = device.DeviceModelID
-		} else if device.DeviceModelID != modelID {
-			sameModel = false
-		}
-		views = append(views, campaignDevicePreviewView{ID: device.ID, ModelName: device.ModelName, ModelID: device.DeviceModelID})
-	}
-	var filteredReleases []releaseOptionView
-	if taskType == domain.TaskTypeFOTA {
-		releases, err := s.loadReleaseOptions(ctx, organisationID)
+	var devices []domain.Device
+	var err error
+	if len(deviceIDs) > 0 {
+		devices, err = s.store.CampaignTargetDevices(ctx, organisationID, deviceIDs)
 		if err != nil {
 			return campaignSelectionPageData{}, err
 		}
-		filteredReleases = make([]releaseOptionView, 0, len(releases))
-		if sameModel {
-			for _, release := range releases {
-				releaseRecord, err := s.store.SoftwareRelease(ctx, release.ID, organisationID)
-				if err != nil {
-					return campaignSelectionPageData{}, err
-				}
-				if releaseRecord.DeviceModelID == modelID {
-					filteredReleases = append(filteredReleases, release)
-				}
-			}
+	}
+	views := make([]campaignDevicePreviewView, 0, len(devices))
+	for _, device := range devices {
+		views = append(views, campaignDevicePreviewView{ID: device.ID, ModelName: device.ModelName, ModelID: device.DeviceModelID})
+	}
+	models, err := s.store.ListDeviceModels(ctx, organisationID)
+	if err != nil {
+		return campaignSelectionPageData{}, err
+	}
+	modelOptions := make([]deviceModelOptionView, 0, len(models))
+	for _, model := range models {
+		modelOptions = append(modelOptions, deviceModelOption(model))
+	}
+	tags, err := s.store.ListTagSuggestions(ctx, organisationID, "")
+	if err != nil {
+		return campaignSelectionPageData{}, err
+	}
+	var releases []releaseOptionView
+	if taskType == domain.TaskTypeFOTA {
+		releases, err = s.loadReleaseOptions(ctx, organisationID)
+		if err != nil {
+			return campaignSelectionPageData{}, err
 		}
 	}
 	help := ""
-	if taskType == domain.TaskTypeFOTA && !sameModel {
-		help = "FOTA campaigns require all selected devices to use the same model."
-	} else if taskType == domain.TaskTypeFOTA && len(filteredReleases) == 0 {
-		help = "No compatible releases are available for the selected model."
+	if taskType == domain.TaskTypeFOTA && len(releases) == 0 {
+		help = "No releases are available in this organisation."
+	}
+	targetType := "filters"
+	if len(deviceIDs) > 0 {
+		targetType = db.CampaignTargetExplicit
 	}
 	return campaignSelectionPageData{
-		Shell:        shell,
-		Devices:      views,
-		Releases:     filteredReleases,
-		FormError:    formError,
-		TaskType:     taskType,
-		TaskLabel:    taskLabel,
-		TaskHelp:     taskHelp,
-		WriteValues:  "[{\"path\":\"config.sample_interval\",\"value\":60}]",
-		TTLDays:      domain.DefaultTaskTTLDays,
-		CanUseFOTA:   len(filteredReleases) > 0,
-		FOTAHelpText: help,
+		Shell:          shell,
+		Devices:        views,
+		Releases:       releases,
+		FormError:      formError,
+		TaskType:       taskType,
+		TaskLabel:      taskLabel,
+		TaskHelp:       taskHelp,
+		WriteValues:    "[{\"path\":\"config.sample_interval\",\"value\":60}]",
+		TTLDays:        domain.DefaultTaskTTLDays,
+		CanUseFOTA:     len(releases) > 0,
+		FOTAHelpText:   help,
+		DeviceModels:   modelOptions,
+		TagSuggestions: tags,
+		TargetType:     targetType,
+		EstimatedCount: len(devices),
 	}, nil
-}
-
-func (s *Server) validateCampaignFOTASelection(ctx context.Context, organisationID int64, deviceIDs []string, releaseIDValue string) error {
-	releaseID, err := strconv.ParseInt(releaseIDValue, 10, 64)
-	if err != nil || releaseID <= 0 {
-		return errors.New("choose a release for the FOTA task")
-	}
-	release, err := s.store.SoftwareRelease(ctx, releaseID, organisationID)
-	if err != nil {
-		return errors.New("choose a release from this organisation")
-	}
-	devices, err := s.store.CampaignTargetDevices(ctx, organisationID, deviceIDs)
-	if err != nil {
-		return err
-	}
-	for _, device := range devices {
-		if device.DeviceModelID != release.DeviceModelID {
-			return errors.New("all selected devices must match the FOTA release model")
-		}
-	}
-	return nil
 }
 
 func (s *Server) loadDeviceTelemetry(ctx context.Context, deviceID string, organisationID int64) ([]twinPropertyView, []deviceEventView, error) {
@@ -4395,7 +4608,62 @@ func parsePositiveInt(value string, fallback int) int {
 	return parsed
 }
 
-func devicePaginationView(path string, organisationID int64, query string, pagination db.Pagination) paginationView {
+func nonBlankStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func parseTagInput(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return []string{}
+	}
+	return nonBlankStrings(strings.Split(value, ","))
+}
+
+// Preserve active filters even when they are outside the suggestion limit or
+// no longer assigned to a device, so changing another filter cannot drop them.
+func deviceTagFilterOptions(suggestions, active []string) []tagOptionView {
+	selected := make(map[string]bool, len(active))
+	for _, tag := range active {
+		selected[tag] = true
+	}
+	options := make([]tagOptionView, 0, len(suggestions)+len(active))
+	seen := make(map[string]bool, len(suggestions)+len(active))
+	for _, tags := range [][]string{active, suggestions} {
+		for _, tag := range tags {
+			if !seen[tag] {
+				options = append(options, tagOptionView{Name: tag, Selected: selected[tag]})
+				seen[tag] = true
+			}
+		}
+	}
+	return options
+}
+
+func normalizeFilterTags(values []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		tag, err := db.NormalizeTag(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seen[tag]; exists {
+			continue
+		}
+		seen[tag] = struct{}{}
+		result = append(result, tag)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func devicePaginationView(path string, organisationID int64, query string, tags []string, modelID int64, pagination db.Pagination) paginationView {
 	view := paginationView{
 		Page:       pagination.Page,
 		PageSize:   pagination.PageSize,
@@ -4406,6 +4674,8 @@ func devicePaginationView(path string, organisationID int64, query string, pagin
 		PageSizes:  []int{25, 50, 100},
 		FormAction: path,
 		Query:      query,
+		Tags:       tags,
+		ModelID:    modelID,
 	}
 	if pagination.TotalRows > 0 {
 		view.RangeStart = pagination.Offset + 1
@@ -4415,20 +4685,26 @@ func devicePaginationView(path string, organisationID int64, query string, pagin
 		}
 	}
 	if view.HasPrev {
-		view.PrevURL = devicePageURL(path, organisationID, query, pagination.Page-1, pagination.PageSize)
+		view.PrevURL = devicePageURL(path, organisationID, query, tags, modelID, pagination.Page-1, pagination.PageSize)
 	}
 	if view.HasNext {
-		view.NextURL = devicePageURL(path, organisationID, query, pagination.Page+1, pagination.PageSize)
+		view.NextURL = devicePageURL(path, organisationID, query, tags, modelID, pagination.Page+1, pagination.PageSize)
 	}
 	return view
 }
 
-func devicePageURL(path string, organisationID int64, query string, page int, pageSize int) string {
+func devicePageURL(path string, organisationID int64, query string, tags []string, modelID int64, page int, pageSize int) string {
 	values := url.Values{}
 	values.Set("organisation_id", strconv.FormatInt(organisationID, 10))
 	query = strings.TrimSpace(query)
 	if query != "" {
 		values.Set("q", query)
+	}
+	for _, tag := range tags {
+		values.Add("tag", tag)
+	}
+	if modelID > 0 {
+		values.Set("model_id", strconv.FormatInt(modelID, 10))
 	}
 	values.Set("page", strconv.Itoa(page))
 	values.Set("page_size", strconv.Itoa(pageSize))
@@ -4544,6 +4820,7 @@ func (s *Server) campaignView(campaign domain.Campaign) campaignView {
 		CanceledAt:     campaign.CanceledAt,
 		TTLDays:        campaign.TaskTTLSeconds / domain.SecondsPerDay,
 		TargetCount:    campaign.TargetCount,
+		Target:         campaignTargetLabel(campaign),
 		Queued:         campaign.Counts.Queued,
 		Pending:        campaign.Counts.Pending,
 		InProgress:     campaign.Counts.InProgress,
@@ -4553,6 +4830,19 @@ func (s *Server) campaignView(campaign domain.Campaign) campaignView {
 		Canceled:       campaign.Counts.Canceled,
 		DetailURL:      campaignDetailURL(campaign.ID, campaign.OrganisationID),
 		CancelAction:   "/campaigns/" + strconv.FormatInt(campaign.ID, 10) + "/cancel",
+	}
+}
+
+func campaignTargetLabel(campaign domain.Campaign) string {
+	switch campaign.TargetType {
+	case "tag":
+		return "Tag: " + campaign.TargetTag
+	case "model":
+		return "Model: " + campaign.TargetModelName
+	case "tag_model":
+		return "Tag: " + campaign.TargetTag + " · Model: " + campaign.TargetModelName
+	default:
+		return "Explicit device selection (" + strconv.Itoa(len(campaign.TargetDeviceIDs)) + ")"
 	}
 }
 
