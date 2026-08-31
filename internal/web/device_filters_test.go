@@ -33,6 +33,7 @@ func TestDeviceFilterToolbarRendering(t *testing.T) {
 	}
 	body := res.Body.String()
 	for _, want := range []string{
+		`<button class="button button-secondary" type="button" data-device-list-refresh>Refresh</button>`,
 		`class="device-filters"`,
 		`name="page_size" value="50"`,
 		`name="q" value="sensor &amp; test"`,
@@ -42,7 +43,7 @@ func TestDeviceFilterToolbarRendering(t *testing.T) {
 		`data-remove-filter-tag="beta"`,
 		`data-bulk-tag-form hidden`,
 		`data-device-selection-count role="status"`,
-		`href="/devices?organisation_id=42&amp;page=2&amp;tag=beta&amp;tag=production"`,
+		`name="return_to" value="/devices?organisation_id=42&amp;page=2&amp;tag=beta&amp;tag=production"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("device toolbar is missing %q", want)

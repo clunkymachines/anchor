@@ -484,6 +484,10 @@ function restoreRememberedTabsAfterSettle(event) {
 
 document.addEventListener("click", (event) => {
   handleDeviceFilterClick(event);
+  if (closestEventTarget(event, "[data-device-list-refresh]")) {
+    window.location.reload();
+    return;
+  }
   if (handleOrganisationPickerClick(event)) {
     return;
   }
