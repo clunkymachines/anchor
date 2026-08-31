@@ -7,6 +7,7 @@ build:
 	mkdir -p build
 	go build -trimpath -ldflags "$(VERSION_LDFLAGS)" -o build/anchor .
 	go build -trimpath -ldflags "$(VERSION_LDFLAGS)" -o build/coap-frontend ./cmd/coap-frontend
+	go build -trimpath -ldflags "$(VERSION_LDFLAGS)" -o build/fleet-sim ./cmd/fleet-sim
 
 run:
 	go run -ldflags "$(VERSION_LDFLAGS)" .

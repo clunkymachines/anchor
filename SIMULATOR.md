@@ -2,6 +2,10 @@
 
 The Anchor fleet simulator provisions a set of MQTT devices, connects one client per device, and continuously publishes CBOR telemetry. It is intended for development, demonstrations, and load testing.
 
+The `fleet-sim` binary is included in Anchor release archives for Linux, macOS,
+and Windows. You can also build it locally with `make build` or run it directly
+from the source tree as shown below.
+
 ## Prerequisites
 
 Before starting the simulator:
@@ -24,7 +28,12 @@ go run ./cmd/fleet-sim \
   -secret local-simulator-secret
 ```
 
-The simulator bulk-provisions the devices through `POST /api/v1/devices/bulk-upsert`, derives conventional MQTT topics from the configured organisation and device IDs, derives deterministic MQTT passwords from the supplied secret, connects the clients, and runs until interrupted. Set `-organisation-id` (or `ANCHOR_SIM_ORGANISATION_ID`) explicitly.
+The simulator bulk-provisions the devices through
+[`POST /api/v1/devices/bulk-upsert`](REST-API.md#bulk-upsert), derives
+conventional MQTT topics from the configured organisation and device IDs,
+derives deterministic MQTT passwords from the supplied secret, connects the
+clients, and runs until interrupted. Set `-organisation-id` (or
+`ANCHOR_SIM_ORGANISATION_ID`) explicitly.
 
 Use `go run ./cmd/fleet-sim -help` for the complete flag reference. Every flag also has an `ANCHOR_SIM_*` environment-variable equivalent.
 

@@ -69,7 +69,10 @@ git tag -a v0.1.0 -m "Anchor v0.1.0"
 git push origin v0.1.0
 ```
 
-The release workflow tests the repository, builds Linux amd64 and arm64 archives containing `anchor` and `coap-frontend`, generates SHA-256 checksums, and creates the GitHub release with generated release notes.
+The release workflow tests the repository and builds archives for Linux,
+macOS, and Windows on amd64 and arm64. Every archive contains `anchor`,
+`coap-frontend`, and `fleet-sim`, with SHA-256 checksums published alongside the
+generated release notes.
 
 ## Connect Your First Device
 
@@ -193,7 +196,8 @@ The status refreshes automatically. Common causes of failure include an unreacha
 
 - [MQTT protocol and Mosquitto setup](MQTT.md)
 - [CoAP/DTLS protocol and frontend setup](COAP.md)
-- [Application-backend device API](API-DEVICE.md)
+- [REST API for application backends and provisioning](REST-API.md)
+- [HTTP device API](DEVICE-API.md)
 - [Fleet simulator](SIMULATOR.md)
 - [Contributing](CONTRIBUTING.md)
 - [License](LICENSE)

@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
 
-          for target in linux/amd64 linux/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os="${target%/*}"
             arch="${target#*/}"
             package="anchor-${VERSION}-${os}-${arch}"
@@ -47,17 +47,28 @@ jobs:
             mkdir -p "${package_dir}"
 
             ldflags="-s -w -X anchor/internal/buildinfo.Version=${VERSION}"
-            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "${ldflags}" -o "${package_dir}/anchor" .
-            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "${ldflags}" -o "${package_dir}/coap-frontend" ./cmd/coap-frontend
-            cp LICENSE README.md "${package_dir}/"
-            tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+            suffix=""
+            if [[ "${os}" == "windows" ]]; then
+              suffix=".exe"
+            fi
+
+            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "${ldflags}" -o "${package_dir}/anchor${suffix}" .
+            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "${ldflags}" -o "${package_dir}/coap-frontend${suffix}" ./cmd/coap-frontend
+            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "${ldflags}" -o "${package_dir}/fleet-sim${suffix}" ./cmd/fleet-sim
+            cp LICENSE README.md SIMULATOR.md "${package_dir}/"
+
+            if [[ "${os}" == "windows" ]]; then
+              (cd dist && zip -qr "${package}.zip" "${package}")
+            else
+              tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+            fi
           done
 
           cd dist
-          sha256sum ./*.tar.gz > checksums.txt
+          sha256sum ./*.tar.gz ./*.zip > checksums.txt
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}
-        run: gh release create "${VERSION}" dist/*.tar.gz dist/checksums.txt --verify-tag --generate-notes --title "${VERSION}"
+        run: gh release create "${VERSION}" dist/*.tar.gz dist/*.zip dist/checksums.txt --verify-tag --generate-notes --title "${VERSION}"
